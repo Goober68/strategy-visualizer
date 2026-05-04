@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>algo-bt visualizer</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #1a1d23;
+    --border: #2a2e36;
+    --text: #d4d7dd;
+    --muted: #7c8190;
+    --accent: #5fa8ff;
+    --long: #26a69a;
+    --short: #ef5350;
+    --tp: #4caf50;
+    --sl: #f44336;
+    --trail: #ffb300;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", system-ui, sans-serif;
+    font-size: 13px; }
+  #app { display: grid; grid-template-rows: auto 1fr; height: 100vh; }
+  header { display: flex; align-items: center; gap: 12px; padding: 8px 12px;
+    background: var(--panel); border-bottom: 1px solid var(--border); }
+  header h1 { font-size: 14px; margin: 0; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  header .meta strong { color: var(--text); font-weight: 500; }
+  header input[type=file] { color: var(--muted); }
+  header .agg { margin-left: auto; display: flex; gap: 16px; }
+  header .agg span { font-size: 12px; color: var(--muted); }
+  header .agg b { color: var(--text); font-weight: 600; }
+  main { display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
+  #chart { background: var(--bg); }
+  #side { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--panel); }
+  #filter { padding: 8px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; }
+  #filter button { background: #2a2e36; color: var(--text); border: 1px solid #3a3f4a;
+    padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  #filter button.active { background: var(--accent); color: #0f1115; border-color: var(--accent); }
+  #filter input { background: #2a2e36; border: 1px solid #3a3f4a; color: var(--text);
+    padding: 3px 8px; border-radius: 4px; font-size: 12px; min-width: 0; flex: 1; }
+  #trades { overflow: auto; flex: 1; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { padding: 4px 6px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { position: sticky; top: 0; background: var(--panel); color: var(--muted);
+    font-weight: 500; cursor: pointer; user-select: none; }
+  th.asc::after  { content: " ▲"; color: var(--accent); }
+  th.desc::after { content: " ▼"; color: var(--accent); }
+  td.dir-LONG  { color: var(--long); }
+  td.dir-SHORT { color: var(--short); }
+  td.profit-pos { color: var(--long); }
+  td.profit-neg { color: var(--short); }
+  td.reason-TP    { color: var(--tp); }
+  td.reason-SL    { color: var(--sl); }
+  td.reason-TRAIL { color: var(--trail); }
+  tr:hover td { background: rgba(95, 168, 255, 0.08); cursor: pointer; }
+  tr.selected td { background: rgba(95, 168, 255, 0.18); }
+  #drop { padding: 24px; text-align: center; color: var(--muted);
+    border: 2px dashed var(--border); border-radius: 8px; margin: 12px; }
+  #drop.dragging { border-color: var(--accent); background: rgba(95, 168, 255, 0.06); }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>algo-bt visualizer</h1>
+    <input type="file" id="file" accept=".json" />
+    <span class="meta" id="meta"></span>
+    <span class="agg" id="agg"></span>
+  </header>
+  <main>
+    <div id="chart"></div>
+    <div id="side">
+      <div id="filter">
+        <button data-filter="all" class="active">all</button>
+        <button data-filter="LONG">long</button>
+        <button data-filter="SHORT">short</button>
+        <button data-filter="win">wins</button>
+        <button data-filter="loss">loss</button>
+        <button data-filter="TP">TP</button>
+        <button data-filter="SL">SL</button>
+        <button data-filter="TRAIL">TRAIL</button>
+        <input id="search" placeholder="filter…" />
+      </div>
+      <div id="trades">
+        <div id="drop">drop a .viz.json here, or use the file picker above</div>
+        <table id="ttbl" class="hidden">
+          <thead><tr>
+            <th data-sort="id">#</th>
+            <th data-sort="entry_time">time</th>
+            <th data-sort="dir">dir</th>
+            <th data-sort="size">qty</th>
+            <th data-sort="entry_price">entry</th>
+            <th data-sort="exit_price">exit</th>
+            <th data-sort="exit_reason">why</th>
+            <th data-sort="profit">$</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+let chart, candles, fastMa, slowMa, currentData = null, currentSort = {key: 'id', dir: 'asc'};
+let activeFilter = 'all', search = '';
+
+function fmtTime(ts) {
+  const d = new Date(ts * 1000);
+  return d.toISOString().replace('T', ' ').slice(0, 19);
+}
+function fmtPnL(p) {
+  return (p >= 0 ? '+' : '') + p.toFixed(2);
+}
+
+function buildChart() {
+  $('#chart').innerHTML = '';
+  chart = LightweightCharts.createChart($('#chart'), {
+    layout: { background: { color: '#0f1115' }, textColor: '#d4d7dd' },
+    grid:   { vertLines: { color: '#1a1d23' }, horzLines: { color: '#1a1d23' } },
+    rightPriceScale: { borderColor: '#2a2e36' },
+    timeScale: { borderColor: '#2a2e36', timeVisible: true, secondsVisible: false },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+  });
+  candles = chart.addCandlestickSeries({
+    upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+  });
+  fastMa = chart.addLineSeries({ color: '#ffb300', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'fast' });
+  slowMa = chart.addLineSeries({ color: '#5fa8ff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'slow' });
+  // resize
+  new ResizeObserver(() => chart.resize($('#chart').clientWidth, $('#chart').clientHeight)).observe($('#chart'));
+}
+
+function loadComposite(d) {
+  currentData = d;
+  if (!chart) buildChart();
+  // Bars
+  candles.setData(d.bars.map(b => ({
+    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+  })));
+  // MAs (skip pre-warmup zeros)
+  fastMa.setData(d.indicators
+    .filter(r => r.fast_ma > 0)
+    .map(r => ({ time: r.time, value: r.fast_ma })));
+  slowMa.setData(d.indicators
+    .filter(r => r.slow_ma > 0)
+    .map(r => ({ time: r.time, value: r.slow_ma })));
+  refreshMarkersAndTable();
+  fitMeta();
+  chart.timeScale().fitContent();
+}
+
+function tradeMarkers(trades) {
+  // Two markers per trade: entry (arrow) + exit (dot colored by reason)
+  const out = [];
+  for (const t of trades) {
+    const isLong = t.dir === 'LONG';
+    out.push({
+      time: t.entry_time,
+      position: isLong ? 'belowBar' : 'aboveBar',
+      shape:    isLong ? 'arrowUp'  : 'arrowDown',
+      color:    isLong ? '#26a69a'  : '#ef5350',
+      text:     `${t.dir[0]}${t.size}@${t.entry_price.toFixed(2)}`,
+      id:       'entry-' + t.id,
+    });
+    const exitColor = t.exit_reason === 'TP' ? '#4caf50'
+                    : t.exit_reason === 'SL' ? '#f44336'
+                    : t.exit_reason === 'TRAIL' ? '#ffb300'
+                    : '#9e9e9e';
+    out.push({
+      time: t.exit_time,
+      position: isLong ? 'aboveBar' : 'belowBar',
+      shape: 'circle',
+      color: exitColor,
+      text: `${t.exit_reason}${fmtPnL(t.profit)}`,
+      id:   'exit-' + t.id,
+    });
+  }
+  // markers must be sorted by time
+  out.sort((a, b) => a.time - b.time);
+  return out;
+}
+
+function applyFilters(trades) {
+  return trades.filter(t => {
+    if (activeFilter === 'LONG'  && t.dir !== 'LONG')  return false;
+    if (activeFilter === 'SHORT' && t.dir !== 'SHORT') return false;
+    if (activeFilter === 'win'   && t.profit <= 0)    return false;
+    if (activeFilter === 'loss'  && t.profit > 0)     return false;
+    if (['TP','SL','TRAIL'].includes(activeFilter) && t.exit_reason !== activeFilter) return false;
+    if (search) {
+      const s = search.toLowerCase();
+      if (!String(t.id).includes(s) &&
+          !t.dir.toLowerCase().includes(s) &&
+          !t.exit_reason.toLowerCase().includes(s) &&
+          !(t.comment || '').toLowerCase().includes(s)) return false;
+    }
+    return true;
+  });
+}
+
+function refreshMarkersAndTable() {
+  if (!currentData) return;
+  let trades = applyFilters(currentData.trades);
+  // sort
+  const k = currentSort.key, mul = currentSort.dir === 'asc' ? 1 : -1;
+  trades = [...trades].sort((a, b) => {
+    const av = a[k], bv = b[k];
+    if (typeof av === 'number') return (av - bv) * mul;
+    return String(av).localeCompare(String(bv)) * mul;
+  });
+  candles.setMarkers(tradeMarkers(trades));
+  renderTable(trades);
+}
+
+function renderTable(trades) {
+  const tbody = $('#ttbl tbody');
+  tbody.innerHTML = trades.map(t => `
+    <tr data-id="${t.id}" data-time="${t.entry_time}">
+      <td>${t.id}</td>
+      <td>${fmtTime(t.entry_time).slice(5,16)}</td>
+      <td class="dir-${t.dir}">${t.dir[0]}</td>
+      <td>${t.size}</td>
+      <td>${t.entry_price.toFixed(2)}</td>
+      <td>${t.exit_price.toFixed(2)}</td>
+      <td class="reason-${t.exit_reason}">${t.exit_reason}</td>
+      <td class="${t.profit > 0 ? 'profit-pos' : 'profit-neg'}">${fmtPnL(t.profit)}</td>
+    </tr>
+  `).join('');
+  $('#ttbl').classList.remove('hidden');
+  $('#drop').classList.add('hidden');
+}
+
+function fitMeta() {
+  const m = currentData.meta || {}, a = currentData.aggregate || {};
+  $('#meta').innerHTML = `<strong>${m.symbol||'?'}</strong> ${m.timeframe||''} ` +
+    `${currentData.bars.length.toLocaleString()} bars · ${currentData.trades.length.toLocaleString()} trades`;
+  if (a && a.trades !== undefined) {
+    const wr = a.win_rate_pct ?? (a.profit_trades / a.trades * 100);
+    $('#agg').innerHTML =
+      `<span><b>${a.profit_trades||0}</b> W / <b>${a.loss_trades||0}</b> L (<b>${wr.toFixed(1)}%</b>)</span>` +
+      `<span>PnL <b style="color:${a.total_profit>=0?'var(--long)':'var(--short)'}">${fmtPnL(a.total_profit||0)}</b></span>` +
+      `<span>maxDD <b>${(a.max_dd_dollars||a.max_dd||0).toFixed(0)}</b></span>`;
+  }
+}
+
+// ─── interactions ────────────────────────────────────────
+$('#file').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const text = await f.text();
+  loadComposite(JSON.parse(text));
+});
+
+const drop = $('#drop');
+['dragenter','dragover'].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('dragging'); }));
+['dragleave','drop'].forEach(ev =>
+  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('dragging'); }));
+drop.addEventListener('drop', async e => {
+  const f = e.dataTransfer.files[0];
+  if (!f) return;
+  loadComposite(JSON.parse(await f.text()));
+});
+
+$('#filter').addEventListener('click', e => {
+  if (e.target.tagName !== 'BUTTON') return;
+  document.querySelectorAll('#filter button').forEach(b => b.classList.remove('active'));
+  e.target.classList.add('active');
+  activeFilter = e.target.dataset.filter;
+  refreshMarkersAndTable();
+});
+
+$('#search').addEventListener('input', e => {
+  search = e.target.value;
+  refreshMarkersAndTable();
+});
+
+$('#ttbl').addEventListener('click', e => {
+  const th = e.target.closest('th');
+  if (th && th.dataset.sort) {
+    if (currentSort.key === th.dataset.sort) {
+      currentSort.dir = currentSort.dir === 'asc' ? 'desc' : 'asc';
+    } else {
+      currentSort.key = th.dataset.sort;
+      currentSort.dir = 'asc';
+    }
+    document.querySelectorAll('#ttbl th').forEach(h => h.classList.remove('asc', 'desc'));
+    th.classList.add(currentSort.dir);
+    refreshMarkersAndTable();
+    return;
+  }
+  const tr = e.target.closest('tr');
+  if (tr && tr.dataset.time) {
+    document.querySelectorAll('#ttbl tr').forEach(r => r.classList.remove('selected'));
+    tr.classList.add('selected');
+    // pan chart to this trade ± 30 bars worth of context
+    const t = parseInt(tr.dataset.time);
+    chart.timeScale().setVisibleRange({ from: t - 30 * 180, to: t + 30 * 180 });
+  }
+});
+</script>
+</body>
+</html>
