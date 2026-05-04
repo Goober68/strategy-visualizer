@@ -32,7 +32,9 @@
   header .agg span { font-size: 12px; color: var(--muted); }
   header .agg b { color: var(--text); font-weight: 600; }
   main { display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
-  #chart { background: var(--bg); }
+  #chartwrap { position: relative; min-height: 0; }
+  #chart { background: var(--bg); position: absolute; inset: 0; }
+  #overlay { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
   #side { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--panel); }
   #filter { padding: 8px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; }
   #filter button { background: #2a2e36; color: var(--text); border: 1px solid #3a3f4a;
@@ -71,7 +73,10 @@
     <span class="agg" id="agg"></span>
   </header>
   <main>
-    <div id="chart"></div>
+    <div id="chartwrap">
+      <div id="chart"></div>
+      <canvas id="overlay"></canvas>
+    </div>
     <div id="side">
       <div id="filter">
         <button data-filter="all" class="active">all</button>
@@ -106,7 +111,9 @@
 <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
 <script>
 const $ = (s) => document.querySelector(s);
-let chart, candles, fastMa, slowMa, currentData = null, currentSort = {key: 'id', dir: 'asc'};
+let chart, candles, fastMa, slowMa;
+let visibleTrades = [];   // trades currently passing filter
+let currentData = null, currentSort = {key: 'id', dir: 'asc'};
 let activeFilter = 'all', search = '';
 
 function fmtTime(ts) {
@@ -132,8 +139,72 @@ function buildChart() {
   });
   fastMa = chart.addLineSeries({ color: '#ffb300', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'fast' });
   slowMa = chart.addLineSeries({ color: '#5fa8ff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'slow' });
+  // Redraw the overlay any time the user pans/zooms or the visible range
+  // changes. Lightweight-charts emits these events on every interaction.
+  chart.timeScale().subscribeVisibleTimeRangeChange(drawArrowOverlay);
+  chart.timeScale().subscribeVisibleLogicalRangeChange(drawArrowOverlay);
+  // Resize: chart is auto-resized via the ResizeObserver below; the
+  // overlay needs its own bitmap resize each time.
+  window.addEventListener('resize', () => requestAnimationFrame(drawArrowOverlay));
   // resize
-  new ResizeObserver(() => chart.resize($('#chart').clientWidth, $('#chart').clientHeight)).observe($('#chart'));
+  new ResizeObserver(() => {
+    chart.resize($('#chart').clientWidth, $('#chart').clientHeight);
+    requestAnimationFrame(drawArrowOverlay);
+  }).observe($('#chart'));
+}
+
+// ─── overlay-canvas trade arrows ────────────────────────────────────
+// Sized to match the chart's pane area. Drawn at chart coordinates via
+// timeScale.timeToCoordinate + series.priceToCoordinate. Cleared and
+// redrawn on every pan/zoom/resize.
+function drawArrowOverlay() {
+  const cv = $('#overlay');
+  if (!cv || !chart || !candles) return;
+  const wrap = $('#chartwrap');
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = wrap.clientWidth, cssH = wrap.clientHeight;
+  if (cv.width  !== cssW * dpr) cv.width  = cssW * dpr;
+  if (cv.height !== cssH * dpr) cv.height = cssH * dpr;
+  cv.style.width  = cssW + 'px';
+  cv.style.height = cssH + 'px';
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  if (!visibleTrades.length) return;
+  const ts = chart.timeScale();
+  const arrowLen = 12, arrowH = 6;
+  // Snap trade times (sub-bar precision) to the containing bar's start.
+  // lightweight-charts' timeToCoordinate only resolves bar-boundary
+  // timestamps; arbitrary tick-second values inside a bar return null.
+  const bp = (currentData?.meta?.bar_period_sec) || 180;
+  const snap = (t) => Math.floor(t / bp) * bp;
+  for (const t of visibleTrades) {
+    const isLong = t.dir === 'LONG';
+    const entryColor = isLong ? '#5fa8ff' : '#ffeb3b';
+    const exitColor  = t.profit > 0 ? '#7fff00' : '#ef5350';   // chartreuse vs candle-green
+    const xIn  = ts.timeToCoordinate(snap(t.entry_time));
+    const yIn  = candles.priceToCoordinate(t.entry_price);
+    const xOut = ts.timeToCoordinate(snap(t.exit_time));
+    const yOut = candles.priceToCoordinate(t.exit_price);
+    if (xIn != null && yIn != null) drawArrow(ctx, xIn,  yIn,  entryColor, 'right', arrowLen, arrowH);
+    if (xOut != null && yOut != null) drawArrow(ctx, xOut, yOut, exitColor,  'left',  arrowLen, arrowH);
+  }
+}
+
+function drawArrow(ctx, x, y, color, dir, len, h) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (dir === 'right') {
+    ctx.moveTo(x,       y);
+    ctx.lineTo(x - len, y - h);
+    ctx.lineTo(x - len, y + h);
+  } else {
+    ctx.moveTo(x,       y);
+    ctx.lineTo(x + len, y - h);
+    ctx.lineTo(x + len, y + h);
+  }
+  ctx.closePath();
+  ctx.fill();
 }
 
 function loadComposite(d) {
@@ -150,9 +221,13 @@ function loadComposite(d) {
   slowMa.setData(d.indicators
     .filter(r => r.slow_ma > 0)
     .map(r => ({ time: r.time, value: r.slow_ma })));
-  refreshMarkersAndTable();
   fitMeta();
+  // Fit BEFORE first overlay draw so price/time coordinates are resolved.
   chart.timeScale().fitContent();
+  // Defer the first overlay draw to the next frame so the chart has
+  // applied fitContent and the visible range is queryable.
+  refreshMarkersAndTable();
+  requestAnimationFrame(drawArrowOverlay);
 }
 
 function tradeMarkers(trades) {
@@ -186,6 +261,7 @@ function tradeMarkers(trades) {
   return out;
 }
 
+
 function applyFilters(trades) {
   return trades.filter(t => {
     if (activeFilter === 'LONG'  && t.dir !== 'LONG')  return false;
@@ -214,7 +290,11 @@ function refreshMarkersAndTable() {
     if (typeof av === 'number') return (av - bv) * mul;
     return String(av).localeCompare(String(bv)) * mul;
   });
-  candles.setMarkers(tradeMarkers(trades));
+  // setMarkers([]) clears the legacy bar-anchored arrows so only the
+  // overlay-canvas arrows (drawArrowOverlay) are visible.
+  candles.setMarkers([]);
+  visibleTrades = trades;
+  drawArrowOverlay();
   renderTable(trades);
 }
 
