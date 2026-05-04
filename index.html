@@ -28,6 +28,8 @@
   header .meta { color: var(--muted); font-size: 12px; margin-left: 8px; }
   header .meta strong { color: var(--text); font-weight: 500; }
   header input[type=file] { color: var(--muted); }
+  header select { background: #2a2e36; color: var(--text); border: 1px solid #3a3f4a;
+    padding: 3px 8px; border-radius: 4px; font-size: 12px; cursor: pointer; }
   header .agg { margin-left: auto; display: flex; gap: 16px; }
   header .agg span { font-size: 12px; color: var(--muted); }
   header .agg b { color: var(--text); font-weight: 600; }
@@ -35,6 +37,38 @@
   #chartwrap { position: relative; min-height: 0; }
   #chart { background: var(--bg); position: absolute; inset: 0; }
   #overlay { position: absolute; inset: 0; pointer-events: none; z-index: 10; }
+  #tooltip { position: absolute; pointer-events: none; z-index: 20; display: none;
+    background: rgba(20, 23, 30, 0.96); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 10px; font-size: 12px; min-width: 240px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+  #tooltip h4 { margin: 0 0 4px 0; font-size: 12px; font-weight: 600; color: var(--text); }
+  #tooltip .ohlc { color: var(--muted); font-size: 11px; margin-bottom: 6px; }
+  #tooltip .ohlc b { color: var(--text); }
+  #tooltip .events { display: grid; grid-template-columns: auto auto auto auto auto; gap: 2px 8px; font-size: 11px; }
+  #tooltip .events .off { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #tooltip .events .ev-ENTRY { color: #5fa8ff; }
+  #tooltip .events .ev-EXIT  { color: #aaa; }
+  #tooltip .events .pnl-pos { color: #7fff00; }
+  #tooltip .events .pnl-neg { color: #ef5350; }
+  #tooltip .empty { color: var(--muted); font-style: italic; font-size: 11px; }
+  #modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 30;
+    display: none; align-items: center; justify-content: center; }
+  #modal-bg.shown { display: flex; }
+  #modal { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; min-width: 720px; max-width: 90vw; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+  #modal h3 { margin: 0 0 8px 0; font-size: 14px; display: flex; align-items: center; gap: 12px; }
+  #modal .close { margin-left: auto; cursor: pointer; color: var(--muted);
+    font-size: 18px; line-height: 1; padding: 0 4px; }
+  #modal .close:hover { color: var(--text); }
+  #modal .summary { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px 14px;
+    font-size: 12px; margin-bottom: 12px; padding: 8px; background: rgba(255,255,255,0.03);
+    border-radius: 4px; }
+  #modal .summary span:nth-child(odd) { color: var(--muted); }
+  #modal .summary span:nth-child(even) { color: var(--text); font-variant-numeric: tabular-nums; }
+  #tickcanvas { display: block; background: var(--bg); border-radius: 4px; }
+  #modal .legend { font-size: 11px; color: var(--muted); margin-top: 8px; display: flex; gap: 16px; }
+  #modal .legend b { color: var(--text); }
+  #modal .nodata { padding: 24px; text-align: center; color: var(--muted); font-style: italic; }
   #side { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--panel); }
   #filter { padding: 8px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; }
   #filter button { background: #2a2e36; color: var(--text); border: 1px solid #3a3f4a;
@@ -68,7 +102,16 @@
 <div id="app">
   <header>
     <h1>algo-bt visualizer</h1>
-    <input type="file" id="file" accept=".json" />
+    <input type="file" id="file" accept=".json" title=".viz.json (bars+indicators+trades)"/>
+    <input type="file" id="tickfile" accept=".json" title=".ticks.json (per-bar tick streams)"/>
+    <select id="tf">
+      <option value="180">M3</option>
+      <option value="900">M15</option>
+      <option value="1800">M30</option>
+      <option value="3600">H1</option>
+      <option value="14400">H4</option>
+      <option value="86400">D1</option>
+    </select>
     <span class="meta" id="meta"></span>
     <span class="agg" id="agg"></span>
   </header>
@@ -76,6 +119,22 @@
     <div id="chartwrap">
       <div id="chart"></div>
       <canvas id="overlay"></canvas>
+      <div id="tooltip"></div>
+    </div>
+    <div id="modal-bg">
+      <div id="modal">
+        <h3>
+          <span id="modal-title"></span>
+          <span class="close" id="modal-close">×</span>
+        </h3>
+        <div class="summary" id="modal-summary"></div>
+        <canvas id="tickcanvas" width="900" height="320"></canvas>
+        <div class="legend">
+          <span>● <b>bid</b> / <b>ask</b></span>
+          <span>▶ <b style="color:#1976d2">long</b> / <b style="color:#ffff00">short</b> entry</span>
+          <span>◀ <b style="color:#7fff00">win</b> / <b style="color:#ef5350">loss</b> exit</span>
+        </div>
+      </div>
     </div>
     <div id="side">
       <div id="filter">
@@ -115,6 +174,8 @@ let chart, candles, fastMa, slowMa;
 let visibleTrades = [];   // trades currently passing filter
 let currentData = null, currentSort = {key: 'id', dir: 'asc'};
 let activeFilter = 'all', search = '';
+let currentTfSec = 180;   // chart timeframe in seconds; aggregated from M3 source
+let tickData = null;      // parsed .ticks.json once loaded
 
 function fmtTime(ts) {
   const d = new Date(ts * 1000);
@@ -134,18 +195,21 @@ function buildChart() {
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   });
   candles = chart.addCandlestickSeries({
-    upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
-    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+    upColor:    '#7fc6d4', downColor:    '#d4be7a', borderVisible: false,
+    wickUpColor:'#7fc6d4', wickDownColor:'#d4be7a',
   });
   fastMa = chart.addLineSeries({ color: '#ffb300', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'fast' });
   slowMa = chart.addLineSeries({ color: '#5fa8ff', lineWidth: 1, priceLineVisible: false, lastValueVisible: false, title: 'slow' });
-  // Redraw the overlay any time the user pans/zooms or the visible range
-  // changes. Lightweight-charts emits these events on every interaction.
-  chart.timeScale().subscribeVisibleTimeRangeChange(drawArrowOverlay);
-  chart.timeScale().subscribeVisibleLogicalRangeChange(drawArrowOverlay);
-  // Resize: chart is auto-resized via the ResizeObserver below; the
-  // overlay needs its own bitmap resize each time.
-  window.addEventListener('resize', () => requestAnimationFrame(drawArrowOverlay));
+  // Continuous rAF loop -- the only way to keep the overlay in lockstep
+  // with the chart's internal render. Subscriber callbacks fire AFTER
+  // the chart has already redrawn the candles, leaving a 1-frame lag
+  // where the overlay shows stale coords during pan/zoom (arrows
+  // appear to "jump" until the subscriber catches up). At 247 trades
+  // × ~4 ctx ops per arrow × 60fps = ~60K ops/sec. Trivial.
+  function rafLoop() { drawArrowOverlay(); requestAnimationFrame(rafLoop); }
+  requestAnimationFrame(rafLoop);
+  // Hover tooltip: show bar OHLC + any trade events inside that bar.
+  chart.subscribeCrosshairMove(updateTooltip);
   // resize
   new ResizeObserver(() => {
     chart.resize($('#chart').clientWidth, $('#chart').clientHeight);
@@ -173,14 +237,13 @@ function drawArrowOverlay() {
   if (!visibleTrades.length) return;
   const ts = chart.timeScale();
   const arrowLen = 12, arrowH = 6;
-  // Snap trade times (sub-bar precision) to the containing bar's start.
-  // lightweight-charts' timeToCoordinate only resolves bar-boundary
-  // timestamps; arbitrary tick-second values inside a bar return null.
-  const bp = (currentData?.meta?.bar_period_sec) || 180;
-  const snap = (t) => Math.floor(t / bp) * bp;
+  // Snap trade times (sub-bar precision) to the containing bar's start
+  // for the CURRENT timeframe. lightweight-charts' timeToCoordinate
+  // only resolves bar-boundary timestamps.
+  const snap = (t) => Math.floor(t / currentTfSec) * currentTfSec;
   for (const t of visibleTrades) {
     const isLong = t.dir === 'LONG';
-    const entryColor = isLong ? '#5fa8ff' : '#ffeb3b';
+    const entryColor = isLong ? '#1976d2' : '#ffff00';   // darker blue / brighter yellow
     const exitColor  = t.profit > 0 ? '#7fff00' : '#ef5350';   // chartreuse vs candle-green
     const xIn  = ts.timeToCoordinate(snap(t.entry_time));
     const yIn  = candles.priceToCoordinate(t.entry_price);
@@ -189,6 +252,75 @@ function drawArrowOverlay() {
     if (xIn != null && yIn != null) drawArrow(ctx, xIn,  yIn,  entryColor, 'right', arrowLen, arrowH);
     if (xOut != null && yOut != null) drawArrow(ctx, xOut, yOut, exitColor,  'left',  arrowLen, arrowH);
   }
+}
+
+// Hover tooltip: list trade events that fall within the hovered bar.
+// Keyed off the chart's crosshair-move event (param.time = bar time at
+// cursor, param.point = canvas-relative pixel coords for placement).
+function updateTooltip(param) {
+  const tt = $('#tooltip');
+  if (!param || !param.time || !param.point || !currentData) {
+    tt.style.display = 'none';
+    return;
+  }
+  const barTime = param.time;            // bar boundary time at cursor
+  const tf = currentTfSec;
+  const barEnd = barTime + tf;
+  // Find OHLC for this bar in the AGGREGATED set (matches what's drawn).
+  // For simplicity, scan -- the chart is small enough.
+  let bar = null;
+  const aggBars = aggregateBars(currentData.bars, tf);
+  for (const b of aggBars) {
+    if (b.time === barTime) { bar = b; break; }
+  }
+  if (!bar) { tt.style.display = 'none'; return; }
+  // Trade events whose time falls in [barTime, barEnd)
+  const events = [];
+  for (const t of currentData.trades) {
+    if (t.entry_time >= barTime && t.entry_time < barEnd) {
+      events.push({ kind: 'ENTRY', t, time: t.entry_time, side: t.dir, qty: t.size, price: t.entry_price });
+    }
+    if (t.exit_time >= barTime && t.exit_time < barEnd) {
+      events.push({ kind: 'EXIT', t, time: t.exit_time, side: t.exit_reason, qty: t.size, price: t.exit_price, pnl: t.profit });
+    }
+  }
+  events.sort((a, b) => a.time - b.time);
+
+  const fmtBarTime = new Date(barTime * 1000).toISOString().replace('T', ' ').slice(0, 16) + ' UTC';
+  let html =
+    `<h4>${fmtBarTime}</h4>` +
+    `<div class="ohlc">O <b>${bar.open.toFixed(2)}</b>  H <b>${bar.high.toFixed(2)}</b>  ` +
+    `L <b>${bar.low.toFixed(2)}</b>  C <b>${bar.close.toFixed(2)}</b></div>`;
+  if (events.length === 0) {
+    html += `<div class="empty">no trades in this bar</div>`;
+  } else {
+    html += `<div class="events">`;
+    for (const e of events) {
+      const off = ((e.time - barTime)).toFixed(0).padStart(3, ' ');
+      const id  = `#${e.t.id}`;
+      const pnlCls = e.kind === 'EXIT' ? (e.pnl > 0 ? 'pnl-pos' : 'pnl-neg') : '';
+      const pnlText = e.kind === 'EXIT' ? `${e.pnl > 0 ? '+' : ''}${e.pnl.toFixed(0)}` : '';
+      html +=
+        `<span class="off">+${off}s</span>` +
+        `<span class="ev-${e.kind}">${e.kind}</span>` +
+        `<span>${e.side}${e.kind === 'ENTRY' ? ` ${e.qty}` : ''}</span>` +
+        `<span>${e.price.toFixed(2)}</span>` +
+        `<span class="${pnlCls}">${pnlText} <span style="color:var(--muted)">${id}</span></span>`;
+    }
+    html += `</div>`;
+  }
+  tt.innerHTML = html;
+  // Position: just to the right of cursor, clamped to viewport
+  const wrap = $('#chartwrap');
+  const wrapRect = wrap.getBoundingClientRect();
+  const ttW = 320, ttH = 200;
+  let x = param.point.x + 14;
+  let y = param.point.y + 14;
+  if (x + ttW > wrapRect.width)  x = param.point.x - ttW - 14;
+  if (y + ttH > wrapRect.height) y = param.point.y - ttH - 14;
+  tt.style.left = x + 'px';
+  tt.style.top  = y + 'px';
+  tt.style.display = 'block';
 }
 
 function drawArrow(ctx, x, y, color, dir, len, h) {
@@ -207,27 +339,60 @@ function drawArrow(ctx, x, y, color, dir, len, h) {
   ctx.fill();
 }
 
+// Aggregate M3 bars to higher timeframes by grouping on (time // period).
+// Bars at native period are returned unchanged.
+function aggregateBars(bars, periodSec) {
+  if (periodSec <= 180) return bars;
+  const out = [];
+  let cur = null;
+  for (const b of bars) {
+    const slot = Math.floor(b.time / periodSec) * periodSec;
+    if (!cur || cur.time !== slot) {
+      if (cur) out.push(cur);
+      cur = { time: slot, open: b.open, high: b.high, low: b.low, close: b.close };
+    } else {
+      if (b.high > cur.high) cur.high = b.high;
+      if (b.low  < cur.low ) cur.low  = b.low;
+      cur.close = b.close;
+    }
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+// Sample M3 indicator at the LAST sample within each higher-TF window.
+// Pre-warmup (value 0) is preserved as 0.
+function aggregateIndicators(inds, periodSec) {
+  if (periodSec <= 180) return inds;
+  const map = new Map();
+  for (const r of inds) {
+    const slot = Math.floor(r.time / periodSec) * periodSec;
+    map.set(slot, { ...r, time: slot });   // last write wins → final M3 sample in window
+  }
+  return [...map.values()].sort((a, b) => a.time - b.time);
+}
+
+function applyTimeframe() {
+  if (!currentData) return;
+  const tf = currentTfSec;
+  const bars = aggregateBars(currentData.bars, tf);
+  const inds = aggregateIndicators(currentData.indicators, tf);
+  candles.setData(bars.map(b => ({
+    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
+  })));
+  fastMa.setData(inds.filter(r => r.fast_ma > 0).map(r => ({ time: r.time, value: r.fast_ma })));
+  slowMa.setData(inds.filter(r => r.slow_ma > 0).map(r => ({ time: r.time, value: r.slow_ma })));
+  // Refit + redraw
+  chart.timeScale().fitContent();
+  requestAnimationFrame(drawArrowOverlay);
+}
+
 function loadComposite(d) {
   currentData = d;
   if (!chart) buildChart();
-  // Bars
-  candles.setData(d.bars.map(b => ({
-    time: b.time, open: b.open, high: b.high, low: b.low, close: b.close,
-  })));
-  // MAs (skip pre-warmup zeros)
-  fastMa.setData(d.indicators
-    .filter(r => r.fast_ma > 0)
-    .map(r => ({ time: r.time, value: r.fast_ma })));
-  slowMa.setData(d.indicators
-    .filter(r => r.slow_ma > 0)
-    .map(r => ({ time: r.time, value: r.slow_ma })));
+  applyTimeframe();
   fitMeta();
-  // Fit BEFORE first overlay draw so price/time coordinates are resolved.
-  chart.timeScale().fitContent();
-  // Defer the first overlay draw to the next frame so the chart has
-  // applied fitContent and the visible range is queryable.
   refreshMarkersAndTable();
-  requestAnimationFrame(drawArrowOverlay);
 }
 
 function tradeMarkers(trades) {
@@ -330,6 +495,19 @@ function fitMeta() {
 }
 
 // ─── interactions ────────────────────────────────────────
+$('#tf').addEventListener('change', (e) => {
+  currentTfSec = parseInt(e.target.value);
+  applyTimeframe();
+});
+
+$('#tickfile').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const text = await f.text();
+  tickData = JSON.parse(text);
+  console.log('ticks loaded:', Object.keys(tickData.bar_ticks || {}).length, 'bars');
+});
+
 $('#file').addEventListener('change', async (e) => {
   const f = e.target.files[0];
   if (!f) return;
@@ -376,14 +554,174 @@ $('#ttbl').addEventListener('click', e => {
     return;
   }
   const tr = e.target.closest('tr');
-  if (tr && tr.dataset.time) {
+  if (tr && tr.dataset.id !== undefined) {
     document.querySelectorAll('#ttbl tr').forEach(r => r.classList.remove('selected'));
     tr.classList.add('selected');
     // pan chart to this trade ± 30 bars worth of context
     const t = parseInt(tr.dataset.time);
-    chart.timeScale().setVisibleRange({ from: t - 30 * 180, to: t + 30 * 180 });
+    chart.timeScale().setVisibleRange({ from: t - 30 * currentTfSec, to: t + 30 * currentTfSec });
+    // open tick-detail modal
+    const id = tr.dataset.id;
+    const trade = currentData.trades.find(x => String(x.id) === id);
+    if (trade) openTickModal(trade);
   }
 });
+
+// ─── tick-detail modal ────────────────────────────────────────────
+function openTickModal(t) {
+  $('#modal-title').textContent =
+    `#${t.id} ${t.dir} qty=${t.size} · entry ${fmtTime(t.entry_time)} @ ${t.entry_price.toFixed(2)} · ` +
+    `exit ${fmtTime(t.exit_time)} @ ${t.exit_price.toFixed(2)}  ${t.exit_reason} ${fmtPnL(t.profit)}`;
+  const sum = $('#modal-summary');
+  const dur = t.exit_time - t.entry_time;
+  sum.innerHTML =
+    `<span>direction</span><span class="dir-${t.dir}">${t.dir}</span>` +
+    `<span>size</span><span>${t.size}</span>` +
+    `<span>entry</span><span>${t.entry_price.toFixed(2)}</span>` +
+    `<span>SL @ entry</span><span>${(t.sl_price||0).toFixed(2)}</span>` +
+    `<span>exit</span><span>${t.exit_price.toFixed(2)}</span>` +
+    `<span>TP @ entry</span><span>${(t.tp_price||0).toFixed(2)}</span>` +
+    `<span>reason</span><span>${t.exit_reason}</span>` +
+    `<span>duration</span><span>${dur}s</span>` +
+    `<span>profit</span><span class="${t.profit>0?'profit-pos':'profit-neg'}">${fmtPnL(t.profit)}</span>` +
+    `<span>comment</span><span>${t.comment || ''}</span>`;
+  drawTickChart(t);
+  $('#modal-bg').classList.add('shown');
+}
+$('#modal-close').addEventListener('click', () => $('#modal-bg').classList.remove('shown'));
+$('#modal-bg').addEventListener('click', (e) => {
+  if (e.target.id === 'modal-bg') $('#modal-bg').classList.remove('shown');
+});
+
+function drawTickChart(t) {
+  const cv = $('#tickcanvas');
+  const ctx = cv.getContext('2d');
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  if (!tickData || !tickData.bar_ticks) {
+    ctx.fillStyle = '#7c8190';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('Drop a .ticks.json file (header file picker) to see tick path.', W/2, H/2);
+    return;
+  }
+  const bp = tickData.bar_period_sec || 180;
+  // Determine entry & exit bar starts; collect ticks for each, and the
+  // continuous time window we'll display (entry_bar_start → exit_bar_end).
+  const eBar = Math.floor(t.entry_time / bp) * bp;
+  const xBar = Math.floor(t.exit_time  / bp) * bp;
+  const startSec = eBar;
+  const endSec   = xBar + bp;       // exclusive
+  // Aggregate ticks across all involved bars (could be 1 or more bars).
+  const ticks = [];
+  for (let b = eBar; b <= xBar; b += bp) {
+    const arr = tickData.bar_ticks[String(b)];
+    if (!arr) continue;
+    for (const [msOff, bid, ask] of arr) {
+      ticks.push({ tMs: (b - startSec) * 1000 + msOff, bid, ask });
+    }
+  }
+  if (ticks.length === 0) {
+    ctx.fillStyle = '#7c8190';
+    ctx.font = '13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('No ticks for this trade in the loaded .ticks.json.', W/2, H/2);
+    return;
+  }
+  ticks.sort((a, b) => a.tMs - b.tMs);
+  const totalMs = (endSec - startSec) * 1000;
+  // Price range: include ticks + entry/exit + SL/TP for context
+  let pMin = Infinity, pMax = -Infinity;
+  for (const tk of ticks) {
+    if (tk.bid < pMin) pMin = tk.bid;
+    if (tk.ask > pMax) pMax = tk.ask;
+  }
+  for (const v of [t.entry_price, t.exit_price, t.sl_price, t.tp_price]) {
+    if (v && v > 0) {
+      if (v < pMin) pMin = v;
+      if (v > pMax) pMax = v;
+    }
+  }
+  const pPad = (pMax - pMin) * 0.08 || 0.5;
+  pMin -= pPad; pMax += pPad;
+  // Plot area
+  const padL = 56, padR = 16, padT = 10, padB = 24;
+  const plotW = W - padL - padR;
+  const plotH = H - padT - padB;
+  const xAt = (tMs) => padL + (tMs / totalMs) * plotW;
+  const yAt = (p)   => padT + (1 - (p - pMin) / (pMax - pMin)) * plotH;
+
+  // Background grid + axis labels
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 1;
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = '#7c8190';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + (i / 4) * plotH;
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    const p = pMax - (i / 4) * (pMax - pMin);
+    ctx.fillText(p.toFixed(2), padL - 4, y + 3);
+  }
+  ctx.textAlign = 'center';
+  // X-axis: bar boundaries
+  for (let b = startSec; b <= endSec; b += bp) {
+    const x = xAt((b - startSec) * 1000);
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+    const lbl = new Date(b * 1000).toISOString().slice(11, 19);
+    ctx.fillText(lbl, x, H - 6);
+  }
+
+  // SL/TP horizontal reference lines
+  if (t.sl_price > 0) {
+    ctx.strokeStyle = 'rgba(239,83,80,0.5)';
+    ctx.setLineDash([4, 3]);
+    const y = yAt(t.sl_price);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#ef5350';
+    ctx.textAlign = 'left';
+    ctx.fillText(`SL ${t.sl_price.toFixed(2)}`, padL + 4, y - 2);
+  }
+  if (t.tp_price > 0) {
+    ctx.strokeStyle = 'rgba(127,255,0,0.5)';
+    ctx.setLineDash([4, 3]);
+    const y = yAt(t.tp_price);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#7fff00';
+    ctx.textAlign = 'left';
+    ctx.fillText(`TP ${t.tp_price.toFixed(2)}`, padL + 4, y - 2);
+  }
+
+  // Bid line (cyan) + Ask line (gold). Step-wise.
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#7fc6d4';     // bid
+  ctx.beginPath();
+  for (let i = 0; i < ticks.length; i++) {
+    const x = xAt(ticks[i].tMs), y = yAt(ticks[i].bid);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+  ctx.strokeStyle = '#d4be7a';     // ask
+  ctx.beginPath();
+  for (let i = 0; i < ticks.length; i++) {
+    const x = xAt(ticks[i].tMs), y = yAt(ticks[i].ask);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Entry arrow at (entry_time, entry_price)
+  const xEntry = xAt((t.entry_time - startSec) * 1000);
+  const yEntry = yAt(t.entry_price);
+  drawArrow(ctx, xEntry, yEntry,
+    t.dir === 'LONG' ? '#1976d2' : '#ffff00', 'right', 14, 7);
+  // Exit arrow at (exit_time, exit_price)
+  const xExit = xAt((t.exit_time - startSec) * 1000);
+  const yExit = yAt(t.exit_price);
+  drawArrow(ctx, xExit, yExit,
+    t.profit > 0 ? '#7fff00' : '#ef5350', 'left', 14, 7);
+}
 </script>
 </body>
 </html>
