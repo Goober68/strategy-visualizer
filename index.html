@@ -33,6 +33,10 @@
   header .agg { margin-left: auto; display: flex; gap: 16px; }
   header .agg span { font-size: 12px; color: var(--muted); }
   header .agg b { color: var(--text); font-weight: 600; }
+  /* Sidebar width = sum(column widths) + scrollbar gutter. Columns:
+     # (~30) + time (~75) + dir (~22) + qty (~28) + why (~52) +
+     $ (~62) + padding (4*2*6 = 48) + scrollbar gutter (~17) = ~334.
+     Add a small slack for filter buttons + safety = 360. */
   main { display: grid; grid-template-columns: 1fr 360px; min-height: 0; }
   #chartwrap { position: relative; min-height: 0; }
   #chart { background: var(--bg); position: absolute; inset: 0; }
@@ -57,7 +61,12 @@
   #modal { background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
     padding: 16px; min-width: 720px; max-width: 90vw; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
   #modal h3 { margin: 0 0 8px 0; font-size: 14px; display: flex; align-items: center; gap: 12px; }
-  #modal .close { margin-left: auto; cursor: pointer; color: var(--muted);
+  #modal .nav { cursor: pointer; color: var(--muted); padding: 0 6px;
+    user-select: none; font-size: 14px; }
+  #modal .nav:hover { color: var(--text); }
+  #modal .nav.disabled { opacity: 0.25; cursor: default; }
+  #modal #modal-prev { margin-left: auto; }
+  #modal .close { cursor: pointer; color: var(--muted);
     font-size: 18px; line-height: 1; padding: 0 4px; }
   #modal .close:hover { color: var(--text); }
   #modal .summary { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 4px 14px;
@@ -70,15 +79,27 @@
   #modal .legend b { color: var(--text); }
   #modal .nodata { padding: 24px; text-align: center; color: var(--muted); font-style: italic; }
   #side { display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--border); background: var(--panel); }
+  #sidestats { padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 12px; line-height: 1.5; }
+  #sidestats .row { display: flex; justify-content: space-between; gap: 12px; }
+  #sidestats .label { color: var(--muted); }
+  #sidestats .v { font-variant-numeric: tabular-nums; }
+  #sidestats .big { font-size: 14px; font-weight: 600; }
+  #sidestats .nodata { color: var(--muted); font-style: italic; padding: 6px 0; }
   #filter { padding: 8px; border-bottom: 1px solid var(--border); display: flex; gap: 6px; flex-wrap: wrap; }
   #filter button { background: #2a2e36; color: var(--text); border: 1px solid #3a3f4a;
     padding: 4px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
   #filter button.active { background: var(--accent); color: #0f1115; border-color: var(--accent); }
   #filter input { background: #2a2e36; border: 1px solid #3a3f4a; color: var(--text);
     padding: 3px 8px; border-radius: 4px; font-size: 12px; min-width: 0; flex: 1; }
-  #trades { overflow: auto; flex: 1; }
+  /* Modern browsers often render the vertical scrollbar as an overlay
+     that sits on top of content even with overflow-y: scroll +
+     scrollbar-gutter: stable. The reliable fix is to give the
+     scrolling container right padding equal to (or larger than) the
+     widest scrollbar a browser might use (~16px on Win, ~14px on
+     Linux), and bump the last-column padding too. */
+  #trades { overflow-y: auto; flex: 1; scrollbar-gutter: stable; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  th, td { padding: 4px 6px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th, td { padding: 3px 4px; text-align: right; border-bottom: 1px solid var(--border); white-space: nowrap; }
   th { position: sticky; top: 0; background: var(--panel); color: var(--muted);
     font-weight: 500; cursor: pointer; user-select: none; }
   th.asc::after  { content: " ▲"; color: var(--accent); }
@@ -125,7 +146,9 @@
       <div id="modal">
         <h3>
           <span id="modal-title"></span>
-          <span class="close" id="modal-close">×</span>
+          <span class="nav" id="modal-prev" title="Previous trade (←)">◀</span>
+          <span class="nav" id="modal-next" title="Next trade (→)">▶</span>
+          <span class="close" id="modal-close" title="Close (Esc)">×</span>
         </h3>
         <div class="summary" id="modal-summary"></div>
         <canvas id="tickcanvas" width="900" height="320"></canvas>
@@ -133,10 +156,12 @@
           <span>● <b>bid</b> / <b>ask</b></span>
           <span>▶ <b style="color:#1976d2">long</b> / <b style="color:#ffff00">short</b> entry</span>
           <span>◀ <b style="color:#7fff00">win</b> / <b style="color:#ef5350">loss</b> exit</span>
+          <span><b style="color:#ef5350">SL</b> / <b style="color:#ffa500">TRIG</b></span>
         </div>
       </div>
     </div>
     <div id="side">
+      <div id="sidestats"></div>
       <div id="filter">
         <button data-filter="all" class="active">all</button>
         <button data-filter="LONG">long</button>
@@ -156,8 +181,6 @@
             <th data-sort="entry_time">time</th>
             <th data-sort="dir">dir</th>
             <th data-sort="size">qty</th>
-            <th data-sort="entry_price">entry</th>
-            <th data-sort="exit_price">exit</th>
             <th data-sort="exit_reason">why</th>
             <th data-sort="profit">$</th>
           </tr></thead>
@@ -176,6 +199,7 @@ let currentData = null, currentSort = {key: 'id', dir: 'asc'};
 let activeFilter = 'all', search = '';
 let currentTfSec = 180;   // chart timeframe in seconds; aggregated from M3 source
 let tickData = null;      // parsed .ticks.json once loaded
+let currentTradeId = null; // the trade currently in the tick modal, for prev/next nav
 
 function fmtTime(ts) {
   const d = new Date(ts * 1000);
@@ -210,6 +234,33 @@ function buildChart() {
   requestAnimationFrame(rafLoop);
   // Hover tooltip: show bar OHLC + any trade events inside that bar.
   chart.subscribeCrosshairMove(updateTooltip);
+  // Click-on-candle -> highlight + open tick modal for any trade
+  // whose lifespan overlaps the clicked bar. A trade is considered
+  // to span [entry_bar_start, exit_bar_end), so clicking any bar
+  // between entry and exit (inclusive of entry, inclusive of exit)
+  // matches it. Multi-bar trades pop the same modal regardless of
+  // which bar in their range you click. If multiple trades overlap
+  // a single bar (rare with max_open_trades=1 but possible with
+  // back-to-back trades), picks the first by id.
+  chart.subscribeClick((param) => {
+    if (!param || param.time === undefined || !currentData) return;
+    const tf = currentTfSec;
+    const barStart = Number(param.time);
+    const barEnd   = barStart + tf;
+    const trade = currentData.trades.find(tr => {
+      const eBar = Math.floor(tr.entry_time / tf) * tf;
+      const xBar = Math.floor(tr.exit_time  / tf) * tf;
+      return barStart >= eBar && barStart <= xBar;
+    });
+    if (!trade) return;
+    const row = document.querySelector(`#ttbl tr[data-id="${trade.id}"]`);
+    if (row) {
+      document.querySelectorAll('#ttbl tr').forEach(r => r.classList.remove('selected'));
+      row.classList.add('selected');
+      row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+    openTickModal(trade);
+  });
   // resize
   new ResizeObserver(() => {
     chart.resize($('#chart').clientWidth, $('#chart').clientHeight);
@@ -471,8 +522,6 @@ function renderTable(trades) {
       <td>${fmtTime(t.entry_time).slice(5,16)}</td>
       <td class="dir-${t.dir}">${t.dir[0]}</td>
       <td>${t.size}</td>
-      <td>${t.entry_price.toFixed(2)}</td>
-      <td>${t.exit_price.toFixed(2)}</td>
       <td class="reason-${t.exit_reason}">${t.exit_reason}</td>
       <td class="${t.profit > 0 ? 'profit-pos' : 'profit-neg'}">${fmtPnL(t.profit)}</td>
     </tr>
@@ -487,10 +536,31 @@ function fitMeta() {
     `${currentData.bars.length.toLocaleString()} bars · ${currentData.trades.length.toLocaleString()} trades`;
   if (a && a.trades !== undefined) {
     const wr = a.win_rate_pct ?? (a.profit_trades / a.trades * 100);
+    const dd = (a.max_dd_dollars||a.max_dd||0);
+    const pnl = a.total_profit||0;
+    const ratio = dd > 0 ? (pnl / dd) : 0;
+    const pnlColor = pnl >= 0 ? 'var(--long)' : 'var(--short)';
+
+    // Header — compact one-liner (kept for those who want it tight).
     $('#agg').innerHTML =
       `<span><b>${a.profit_trades||0}</b> W / <b>${a.loss_trades||0}</b> L (<b>${wr.toFixed(1)}%</b>)</span>` +
-      `<span>PnL <b style="color:${a.total_profit>=0?'var(--long)':'var(--short)'}">${fmtPnL(a.total_profit||0)}</b></span>` +
-      `<span>maxDD <b>${(a.max_dd_dollars||a.max_dd||0).toFixed(0)}</b></span>`;
+      `<span>PnL <b style="color:${pnlColor}">${fmtPnL(pnl)}</b></span>` +
+      `<span>maxDD <b>${dd.toFixed(0)}</b></span>`;
+
+    // Sidebar stats panel — full breakdown, prominent.
+    $('#sidestats').innerHTML =
+      `<div class="row"><span class="label">${m.symbol||'?'}</span>` +
+        `<span class="v">${currentData.trades.length.toLocaleString()} trades</span></div>` +
+      `<div class="row"><span class="label">PnL</span>` +
+        `<span class="v big" style="color:${pnlColor}">${fmtPnL(pnl)}</span></div>` +
+      `<div class="row"><span class="label">max DD</span>` +
+        `<span class="v">${fmtPnL(-dd)}</span></div>` +
+      `<div class="row"><span class="label">PnL / DD</span>` +
+        `<span class="v">${ratio.toFixed(1)}×</span></div>` +
+      `<div class="row"><span class="label">win rate</span>` +
+        `<span class="v">${wr.toFixed(1)}% (${a.profit_trades||0}W/${a.loss_trades||0}L)</span></div>`;
+  } else {
+    $('#sidestats').innerHTML = `<div class="nodata">no aggregate yet</div>`;
   }
 }
 
@@ -587,10 +657,47 @@ function openTickModal(t) {
     `<span>comment</span><span>${t.comment || ''}</span>`;
   drawTickChart(t);
   $('#modal-bg').classList.add('shown');
+  // Remember the trade id for prev/next nav, and grey out the
+  // triangles that would walk past the ends of the filtered list.
+  currentTradeId = t.id;
+  const idx = visibleTrades.findIndex(x => x.id === t.id);
+  $('#modal-prev').classList.toggle('disabled', idx <= 0);
+  $('#modal-next').classList.toggle('disabled', idx < 0 || idx >= visibleTrades.length - 1);
 }
 $('#modal-close').addEventListener('click', () => $('#modal-bg').classList.remove('shown'));
 $('#modal-bg').addEventListener('click', (e) => {
   if (e.target.id === 'modal-bg') $('#modal-bg').classList.remove('shown');
+});
+
+// Prev/next trade navigation. Walks the visibleTrades array (which
+// respects the current filter + sort). If we're at the ends, the
+// triangle goes to a disabled-look state and clicks no-op.
+function navTrade(delta) {
+  if (!currentData || !currentTradeId) return;
+  const idx = visibleTrades.findIndex(x => x.id === currentTradeId);
+  if (idx < 0) return;
+  const next = idx + delta;
+  if (next < 0 || next >= visibleTrades.length) return;
+  const trade = visibleTrades[next];
+  // Mirror the row-click side-effects: highlight + scroll the table.
+  const row = document.querySelector(`#ttbl tr[data-id="${trade.id}"]`);
+  if (row) {
+    document.querySelectorAll('#ttbl tr').forEach(r => r.classList.remove('selected'));
+    row.classList.add('selected');
+    row.scrollIntoView({ block: 'center' });
+  }
+  openTickModal(trade);
+}
+$('#modal-prev').addEventListener('click', () => navTrade(-1));
+$('#modal-next').addEventListener('click', () => navTrade(+1));
+
+// Keyboard navigation while the modal is open: ← / → for prev/next,
+// Esc to close.
+document.addEventListener('keydown', (e) => {
+  if (!$('#modal-bg').classList.contains('shown')) return;
+  if (e.key === 'ArrowLeft')  { e.preventDefault(); navTrade(-1); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); navTrade(+1); }
+  if (e.key === 'Escape')     { $('#modal-bg').classList.remove('shown'); }
 });
 
 function drawTickChart(t) {
@@ -636,7 +743,21 @@ function drawTickChart(t) {
     if (tk.bid < pMin) pMin = tk.bid;
     if (tk.ask > pMax) pMax = tk.ask;
   }
-  for (const v of [t.entry_price, t.exit_price, t.sl_price, t.tp_price]) {
+  // Compute trail-trigger price for this trade (where the trail
+  // stop activates). Long: entry + ts_trigger_ticks * tick_size.
+  // Short: entry - ts_trigger_ticks * tick_size.
+  const cfg      = currentData.config || {};
+  const trigTks  = Number(cfg.inpTSTriggerTicks ?? 0);
+  const tickSize = Number(currentData.meta?.tick_size ?? 0.25);
+  let trailTrigPrice = 0;
+  if (trigTks > 0 && tickSize > 0) {
+    const dirSign = (t.dir === 'LONG') ? 1 : -1;
+    trailTrigPrice = t.entry_price + dirSign * trigTks * tickSize;
+  }
+  // Drop tp_price from y-axis range. Trail almost always fires first,
+  // so including TP forces the chart to span a much wider price range
+  // and compresses the actual tick movement into a tiny vertical band.
+  for (const v of [t.entry_price, t.exit_price, t.sl_price, trailTrigPrice]) {
     if (v && v > 0) {
       if (v < pMin) pMin = v;
       if (v > pMax) pMax = v;
@@ -672,6 +793,20 @@ function drawTickChart(t) {
     ctx.fillText(lbl, x, H - 6);
   }
 
+  // Entry-price horizontal reference: light-grey dotted, so the
+  // entry price level is unmistakable amid the bid/ask noise even
+  // when the entry arrow's x-position is hard to pick out.
+  if (t.entry_price > 0) {
+    ctx.strokeStyle = 'rgba(200, 200, 200, 0.5)';
+    ctx.setLineDash([2, 4]);
+    const y = yAt(t.entry_price);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#c8c8c8';
+    ctx.textAlign = 'left';
+    ctx.fillText(`ENTRY ${t.entry_price.toFixed(2)}`, padL + 4, y - 2);
+  }
+
   // SL/TP horizontal reference lines
   if (t.sl_price > 0) {
     ctx.strokeStyle = 'rgba(239,83,80,0.5)';
@@ -683,15 +818,19 @@ function drawTickChart(t) {
     ctx.textAlign = 'left';
     ctx.fillText(`SL ${t.sl_price.toFixed(2)}`, padL + 4, y - 2);
   }
-  if (t.tp_price > 0) {
-    ctx.strokeStyle = 'rgba(127,255,0,0.5)';
-    ctx.setLineDash([4, 3]);
-    const y = yAt(t.tp_price);
+  // TP line dropped per user 2026-05-04 -- trail almost always fires
+  // before TP on this strategy, so the line was visual noise and
+  // forced the y-axis to span an unhelpfully wide range.
+  // Trail-trigger price: orange dotted line. Where the ratchet activates.
+  if (trailTrigPrice > 0) {
+    ctx.strokeStyle = 'rgba(255,165,0,0.7)';
+    ctx.setLineDash([2, 4]);            // dotted (vs SL/TP's dashed)
+    const y = yAt(trailTrigPrice);
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = '#7fff00';
+    ctx.fillStyle = '#ffa500';
     ctx.textAlign = 'left';
-    ctx.fillText(`TP ${t.tp_price.toFixed(2)}`, padL + 4, y - 2);
+    ctx.fillText(`TRIG ${trailTrigPrice.toFixed(2)}`, padL + 4, y - 2);
   }
 
   // Bid line (cyan) + Ask line (gold). Step-wise.
