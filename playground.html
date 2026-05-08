@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>XOVD Kernel Playground</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; background: #0f1115; color: #e0e6ed; }
+  header { padding: 8px 14px; background: #181c25; border-bottom: 1px solid #2a3140; display: flex; gap: 16px; align-items: center; }
+  header h1 { font-size: 14px; font-weight: 700; color: #6ec3ff; }
+  header .ws-status { padding: 2px 8px; border-radius: 3px; font-size: 11px; }
+  header .ws-status.connected { background: #1d6e3a; color: #c5f5d0; }
+  header .ws-status.disconnected { background: #6e1d1d; color: #f5c5c5; }
+  header .ws-status.connecting { background: #6e561d; color: #f5e1c5; }
+
+  .layout { display: grid; grid-template-columns: 320px 1fr; height: calc(100vh - 40px); }
+  .sliders { padding: 14px; border-right: 1px solid #2a3140; overflow-y: auto; background: #131822; }
+  .sliders h2 { font-size: 12px; color: #8a99af; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .slider-row { margin-bottom: 14px; }
+  .slider-row label { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 4px; }
+  .slider-row label .name { color: #b0bccd; }
+  .slider-row label .val { color: #ffd874; font-weight: 700; }
+  .slider-row input[type=range] { width: 100%; }
+  .slider-row .range-meta { font-size: 10px; color: #5b6478; display: flex; justify-content: space-between; margin-top: 2px; }
+  .controls { display: flex; gap: 8px; margin-top: 10px; }
+  .controls button { flex: 1; padding: 6px; background: #2a3140; color: #e0e6ed; border: 1px solid #3d4658; border-radius: 3px; cursor: pointer; font-family: inherit; font-size: 11px; }
+  .controls button:hover { background: #353c4e; }
+  .controls button.primary { background: #1d4e7e; border-color: #2563a6; color: #cfe5fa; }
+  .controls button.primary:hover { background: #2563a6; }
+
+  .results { display: flex; flex-direction: column; padding: 14px; gap: 14px; overflow: hidden; }
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; padding: 14px; background: #181c25; border: 1px solid #2a3140; border-radius: 4px; }
+  .stat { display: flex; flex-direction: column; }
+  .stat .label { font-size: 10px; color: #8a99af; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat .value { font-size: 18px; font-weight: 700; margin-top: 2px; }
+  .stat .value.pos { color: #5dd6a0; }
+  .stat .value.neg { color: #f56c6c; }
+  .stat .value.neutral { color: #e0e6ed; }
+  .stat .sub { font-size: 10px; color: #5b6478; margin-top: 2px; }
+
+  .chart-wrap { background: #181c25; border: 1px solid #2a3140; border-radius: 4px; padding: 14px; flex: 1; min-height: 280px; display: flex; flex-direction: column; }
+  .chart-wrap h3 { font-size: 11px; color: #8a99af; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
+  canvas#equity { width: 100%; height: 100%; flex: 1; }
+
+  .trades-wrap { background: #181c25; border: 1px solid #2a3140; border-radius: 4px; max-height: 320px; display: flex; flex-direction: column; }
+  .trades-wrap h3 { padding: 10px 14px; font-size: 11px; color: #8a99af; border-bottom: 1px solid #2a3140; text-transform: uppercase; letter-spacing: 0.5px; display: flex; justify-content: space-between; }
+  .trades-wrap h3 .filter-toggle { font-size: 10px; color: #6ec3ff; cursor: pointer; user-select: none; }
+  .trades-table { overflow-y: auto; font-size: 11px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { position: sticky; top: 0; background: #181c25; padding: 6px 8px; text-align: left; color: #8a99af; font-weight: 600; border-bottom: 1px solid #2a3140; }
+  td { padding: 4px 8px; border-bottom: 1px solid #2a3140; }
+  tr:hover { background: #1d2330; }
+  td.pos { color: #5dd6a0; }
+  td.neg { color: #f56c6c; }
+  td.dir-long  { color: #6ec3ff; }
+  td.dir-short { color: #d39de4; }
+
+  .reason-trail   { color: #5dd6a0; }
+  .reason-tp      { color: #ffd874; }
+  .reason-sl      { color: #f56c6c; }
+  .reason-cross   { color: #d39de4; }
+  .reason-maxbars { color: #b0bccd; }
+
+  .empty { padding: 30px; text-align: center; color: #5b6478; font-size: 12px; }
+  .pending { opacity: 0.5; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>XOVD Kernel Playground</h1>
+  <span id="ws-status" class="ws-status disconnected">disconnected</span>
+  <span id="dataset-info" style="color: #8a99af; font-size: 11px;"></span>
+  <span id="latency" style="color: #5b6478; font-size: 11px; margin-left: auto;"></span>
+</header>
+
+<div class="layout">
+
+  <aside class="sliders">
+    <h2>Parameters</h2>
+    <div id="sliders"></div>
+    <div class="controls">
+      <button id="reset">Reset</button>
+      <button id="run" class="primary">Run</button>
+    </div>
+    <h2 style="margin-top: 24px;">Live overlay</h2>
+    <div class="slider-row">
+      <label>
+        <span class="name">Show TPT-499 live trades</span>
+        <input type="checkbox" id="overlay-live" />
+      </label>
+      <div class="range-meta" id="overlay-live-meta">load via &lt;input type="file"&gt; below</div>
+    </div>
+    <div class="slider-row">
+      <input type="file" id="live-csv" accept=".csv" style="font-size: 10px;" />
+    </div>
+  </aside>
+
+  <main class="results">
+    <div class="stats" id="stats">
+      <div class="stat"><span class="label">Trades</span><span class="value neutral" id="s-n">—</span><span class="sub" id="s-wr">—</span></div>
+      <div class="stat"><span class="label">Wins</span><span class="value pos" id="s-w">—</span></div>
+      <div class="stat"><span class="label">Losses</span><span class="value neg" id="s-l">—</span></div>
+      <div class="stat"><span class="label">P&amp;L (pts)</span><span class="value neutral" id="s-pnl">—</span><span class="sub" id="s-pnl-dollars">—</span></div>
+      <div class="stat"><span class="label">Max DD (pts)</span><span class="value neg" id="s-dd">—</span><span class="sub" id="s-dd-dollars">—</span></div>
+    </div>
+
+    <div class="chart-wrap">
+      <h3>Equity curve (cumulative points)</h3>
+      <canvas id="equity"></canvas>
+    </div>
+
+    <div class="trades-wrap">
+      <h3>
+        <span>Trades <span id="t-count" style="color: #8a99af; font-weight: normal;"></span></span>
+        <span class="filter-toggle" id="filter-toggle">show all</span>
+      </h3>
+      <div class="trades-table">
+        <table id="trades">
+          <thead>
+            <tr><th>#</th><th>Dir</th><th>Entry</th><th>Exit</th><th>EnPx</th><th>ExPx</th><th>Pts</th><th>$</th><th>Bars</th><th>Reason</th></tr>
+          </thead>
+          <tbody id="trades-body">
+            <tr><td colspan="10" class="empty">Connect to a relay and click Run to begin.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────
+// Slider config — 12 swept dimensions matching gen_sweep_10M_v2.py
+// ─────────────────────────────────────────────────────────────────────
+const SLIDER_DEFS = [
+  { name: "tp_atr_mult",      label: "TP ATR mult",       min: 2.5,  max: 8.0,  step: 0.05, kind: "float" },
+  { name: "ts_trigger_ticks", label: "TS Trigger (ticks)",min: 5,    max: 40,   step: 1,    kind: "int" },
+  { name: "ts_trail_ticks",   label: "TS Trail (ticks)",  min: 1,    max: 12,   step: 1,    kind: "int" },
+  { name: "min_sl_ticks",     label: "Min SL (ticks)",    min: 5,    max: 50,   step: 1,    kind: "int" },
+  { name: "max_sl_ticks",     label: "Max SL (ticks)",    min: 15,   max: 100,  step: 1,    kind: "int" },
+  { name: "risk_dollars",     label: "Risk $ / trade",    min: 5,    max: 200,  step: 1,    kind: "float" },
+  { name: "min_bars_above",   label: "Min Bars Above",    min: 0,    max: 6,    step: 1,    kind: "int" },
+  { name: "min_bars_below",   label: "Min Bars Below",    min: 0,    max: 6,    step: 1,    kind: "int" },
+  { name: "min_bars_after_l", label: "Min Bars After L",  min: 0,    max: 6,    step: 1,    kind: "int" },
+  { name: "min_bars_after_s", label: "Min Bars After S",  min: 0,    max: 6,    step: 1,    kind: "int" },
+  { name: "dist_adjust",      label: "Dist Adjust",       min: 0.05, max: 0.50, step: 0.005,kind: "float" },
+  { name: "ema_max_adjust",   label: "EMA Max Adjust",    min: 1.0,  max: 12.0, step: 0.1,  kind: "float" },
+];
+
+// Will be overridden by server's "hello" message
+let DEFAULT_PARAMS = [4.95, 19, 4, 18, 27, 45, 0, 1, 0, 0, 0.28, 6.0];
+const TICK_VALUE = 0.5;  // $ per tick for MNQ, used to convert points -> $
+
+// ─────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────
+let ws = null;
+let nextRequestId = 1;
+let lastRequestStartMs = 0;
+let liveOverlayTrades = null;  // parsed CSV from data/live_accounts/...
+
+// ─────────────────────────────────────────────────────────────────────
+// DOM helpers
+// ─────────────────────────────────────────────────────────────────────
+const $  = sel => document.querySelector(sel);
+const $$ = sel => document.querySelectorAll(sel);
+
+function setStatus(text, cls) {
+  const el = $("#ws-status");
+  el.textContent = text;
+  el.className = "ws-status " + cls;
+}
+
+function buildSliders() {
+  const root = $("#sliders");
+  root.innerHTML = "";
+  SLIDER_DEFS.forEach((def, i) => {
+    const row = document.createElement("div");
+    row.className = "slider-row";
+    row.innerHTML = `
+      <label>
+        <span class="name">${def.label}</span>
+        <span class="val" id="val-${def.name}">${DEFAULT_PARAMS[i]}</span>
+      </label>
+      <input type="range" id="sl-${def.name}"
+             min="${def.min}" max="${def.max}" step="${def.step}"
+             value="${DEFAULT_PARAMS[i]}" />
+      <div class="range-meta"><span>${def.min}</span><span>${def.max}</span></div>
+    `;
+    root.appendChild(row);
+    const input = row.querySelector("input");
+    const valLabel = row.querySelector(".val");
+    let pendingTimer = null;
+    input.addEventListener("input", () => {
+      const v = def.kind === "int" ? parseInt(input.value, 10) : parseFloat(input.value);
+      valLabel.textContent = v;
+    });
+    input.addEventListener("change", () => {
+      if (pendingTimer) clearTimeout(pendingTimer);
+      pendingTimer = setTimeout(() => sendRunRequest(), 50);
+    });
+  });
+}
+
+function readSliders() {
+  return SLIDER_DEFS.map(def => {
+    const v = $(`#sl-${def.name}`).value;
+    return def.kind === "int" ? parseInt(v, 10) : parseFloat(v);
+  });
+}
+
+function setSliders(values) {
+  SLIDER_DEFS.forEach((def, i) => {
+    const input = $(`#sl-${def.name}`);
+    if (input) {
+      input.value = values[i];
+      $(`#val-${def.name}`).textContent = values[i];
+    }
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// WebSocket
+// ─────────────────────────────────────────────────────────────────────
+function connect() {
+  setStatus("connecting...", "connecting");
+  ws = new WebSocket("ws://localhost:8765");
+  ws.onopen  = () => setStatus("connected", "connected");
+  ws.onclose = () => { setStatus("disconnected", "disconnected"); setTimeout(connect, 2000); };
+  ws.onerror = e => console.error("ws error", e);
+  ws.onmessage = ev => {
+    let msg;
+    try { msg = JSON.parse(ev.data); }
+    catch (e) { console.error("bad msg", ev.data); return; }
+    handleMessage(msg);
+  };
+}
+
+function handleMessage(msg) {
+  if (msg.type === "hello") {
+    if (msg.default_params && msg.default_params.length === 12) {
+      DEFAULT_PARAMS = msg.default_params;
+      setSliders(DEFAULT_PARAMS);
+    }
+    if (msg.dataset_info) $("#dataset-info").textContent = msg.dataset_info;
+    sendRunRequest();
+    return;
+  }
+  if (msg.type === "error") {
+    console.error("server error:", msg.error);
+    return;
+  }
+  if (msg.type === "result") {
+    const elapsed = performance.now() - lastRequestStartMs;
+    $("#latency").textContent = `${elapsed.toFixed(0)} ms`;
+    renderResult(msg);
+  }
+}
+
+function sendRunRequest() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const params = readSliders();
+  const id = nextRequestId++;
+  lastRequestStartMs = performance.now();
+  ws.send(JSON.stringify({ id, params }));
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Result rendering
+// ─────────────────────────────────────────────────────────────────────
+function renderResult(msg) {
+  const stats  = msg.stats || {};
+  const trades = msg.trades || [];
+
+  // Stats panel
+  const n   = stats.n_trades  || 0;
+  const w   = stats.n_wins    || 0;
+  const l   = stats.n_losses  || 0;
+  const pnl = stats.total_pnl_points || 0;
+  const dd  = stats.max_dd_points || 0;
+  const wr  = n > 0 ? (w / n * 100) : 0;
+  $("#s-n").textContent   = n;
+  $("#s-wr").textContent  = `WR ${wr.toFixed(1)}%`;
+  $("#s-w").textContent   = w;
+  $("#s-l").textContent   = l;
+  $("#s-pnl").textContent = pnl.toFixed(2);
+  $("#s-pnl-dollars").textContent = `$${(pnl * TICK_VALUE * 4).toFixed(0)}`;
+  $("#s-pnl").className   = "value " + (pnl > 0 ? "pos" : pnl < 0 ? "neg" : "neutral");
+  $("#s-dd").textContent  = dd.toFixed(2);
+  $("#s-dd-dollars").textContent  = `$${(dd * TICK_VALUE * 4).toFixed(0)}`;
+
+  $("#t-count").textContent = `(${trades.length})`;
+
+  drawEquityCurve(trades);
+  renderTradesTable(trades);
+  window.lastTrades = trades;  // for window-resize redraw
+}
+
+const REASON_LABELS = ["NONE", "TP", "SL", "TRAIL", "CROSS", "MAXBARS", "EOSTREAM"];
+const REASON_CLASSES = ["", "tp", "sl", "trail", "cross", "maxbars", ""];
+
+function renderTradesTable(trades) {
+  const tbody = $("#trades-body");
+  tbody.innerHTML = "";
+  if (trades.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No trades for this config.</td></tr>';
+    return;
+  }
+  // Show first 200 -- table can drag if user wants more, but rendering 1000+ rows is slow
+  const slice = trades.slice(0, 200);
+  let cum = 0;
+  slice.forEach((t, i) => {
+    cum += t.profit_points;
+    const dirClass = t.dir === 1 ? "dir-long" : "dir-short";
+    const dirText  = t.dir === 1 ? "LONG"     : "SHORT";
+    const pnlClass = t.profit_points > 0 ? "pos" : "neg";
+    const dollars = (t.profit_points * TICK_VALUE * 4 * t.qty).toFixed(0);
+    const reasonText = REASON_LABELS[t.reason] || `?${t.reason}`;
+    const reasonCls  = REASON_CLASSES[t.reason] || "";
+    tbody.insertAdjacentHTML("beforeend", `
+      <tr>
+        <td>${i + 1}</td>
+        <td class="${dirClass}">${dirText}</td>
+        <td>${formatTimeNs(t.entry_ns)}</td>
+        <td>${formatTimeNs(t.exit_ns)}</td>
+        <td>${t.entry_px.toFixed(2)}</td>
+        <td>${t.exit_px.toFixed(2)}</td>
+        <td class="${pnlClass}">${t.profit_points.toFixed(2)}</td>
+        <td class="${pnlClass}">$${dollars}</td>
+        <td>${t.bar_in}-${t.bar_out}</td>
+        <td class="reason-${reasonCls}">${reasonText}</td>
+      </tr>
+    `);
+  });
+  if (trades.length > 200) {
+    tbody.insertAdjacentHTML("beforeend", `
+      <tr><td colspan="10" class="empty">... and ${trades.length - 200} more (truncated for rendering speed)</td></tr>
+    `);
+  }
+}
+
+function formatTimeNs(ns) {
+  const d = new Date(Number(ns) / 1e6);  // ns -> ms
+  // Display in ET (UTC-4 May 2026 DST)
+  const utcH = d.getUTCHours();
+  const etH  = (utcH + 24 - 4) % 24;
+  const etDay = utcH < 4 ? `${(d.getUTCMonth()+1)}/${d.getUTCDate()-1} ` : "";
+  return `${etDay}${String(etH).padStart(2,"0")}:${String(d.getUTCMinutes()).padStart(2,"0")} ET`;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Equity-curve chart (canvas)
+// ─────────────────────────────────────────────────────────────────────
+function drawEquityCurve(trades) {
+  const canvas = $("#equity");
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(dpr, dpr);
+
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  if (trades.length === 0) {
+    ctx.fillStyle = "#5b6478";
+    ctx.font = "12px ui-monospace, Menlo, Consolas, monospace";
+    ctx.fillText("No trades", 10, 20);
+    return;
+  }
+
+  // Build equity series
+  let cum = 0;
+  const points = trades.map(t => { cum += t.profit_points; return cum; });
+  const minY = Math.min(0, ...points);
+  const maxY = Math.max(0, ...points);
+  const padX = 40, padTop = 12, padBot = 24;
+  const xScale = (W - padX - 12) / Math.max(1, points.length - 1);
+  const yScale = (H - padTop - padBot) / (maxY - minY || 1);
+  const yOf = v => padTop + (maxY - v) * yScale;
+
+  // Zero line
+  ctx.strokeStyle = "#2a3140";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padX, yOf(0));
+  ctx.lineTo(W - 12, yOf(0));
+  ctx.stroke();
+
+  // Equity line
+  ctx.strokeStyle = points[points.length-1] >= 0 ? "#5dd6a0" : "#f56c6c";
+  ctx.lineWidth = 1.6;
+  ctx.beginPath();
+  points.forEach((y, i) => {
+    const x = padX + i * xScale;
+    if (i === 0) ctx.moveTo(x, yOf(y));
+    else         ctx.lineTo(x, yOf(y));
+  });
+  ctx.stroke();
+
+  // Y-axis labels
+  ctx.fillStyle = "#5b6478";
+  ctx.font = "10px ui-monospace, Menlo, Consolas, monospace";
+  ctx.textAlign = "right";
+  ctx.fillText(`+${maxY.toFixed(0)} pts`, padX - 4, padTop + 8);
+  ctx.fillText(`${minY.toFixed(0)} pts`, padX - 4, H - padBot);
+  ctx.fillText(`0`, padX - 4, yOf(0) + 4);
+  ctx.textAlign = "left";
+  ctx.fillText(`${trades.length} trades`, padX, H - 4);
+
+  // ── Phase 4: live overlay ──
+  if ($("#overlay-live").checked && liveOverlayTrades && liveOverlayTrades.length > 0) {
+    let cumLive = 0;
+    const livePoints = liveOverlayTrades.map(t => { cumLive += t.profit_points; return cumLive; });
+    const liveScale = (W - padX - 12) / Math.max(1, livePoints.length - 1);
+    ctx.strokeStyle = "#ffd874";  // amber for live
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([4, 3]);
+    ctx.beginPath();
+    livePoints.forEach((y, i) => {
+      const x = padX + i * liveScale;
+      if (i === 0) ctx.moveTo(x, yOf(y));
+      else         ctx.lineTo(x, yOf(y));
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#ffd874";
+    ctx.fillText(`live: ${livePoints.length} trades, ${(cumLive).toFixed(0)} pts`, padX + 100, H - 4);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Phase 4: live trade overlay loader
+// ─────────────────────────────────────────────────────────────────────
+$("#live-csv").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  liveOverlayTrades = parseLiveCsv(text);
+  $("#overlay-live-meta").textContent = `${liveOverlayTrades.length} live trades loaded`;
+  if ($("#overlay-live").checked) drawEquityCurve(window.lastTrades || []);
+});
+$("#overlay-live").addEventListener("change", () => {
+  // Just redraw with whatever's currently in window.lastTrades; don't
+  // re-request from the kernel (overlay is purely a render-side toggle).
+  drawEquityCurve(window.lastTrades || []);
+});
+
+function parseLiveCsv(text) {
+  // Relay-format columns:
+  //   id, broker_trade_id, symbol, side, status, qty_original_cached, qty_open,
+  //   entry_price_cached, entry_time_cached, exit_price_cached, exit_time_cached,
+  //   realized_pnl_cached, commission_total_cached, ...
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const header = lines[0].split(",");
+  const idx = (name) => header.indexOf(name);
+  const iSide   = idx("side");
+  const iStatus = idx("status");
+  const iEntryPx = idx("entry_price_cached");
+  const iExitPx  = idx("exit_price_cached");
+  const iEntryT  = idx("entry_time_cached");
+  const iExitT   = idx("exit_time_cached");
+  const iPnl     = idx("realized_pnl_cached");
+  const out = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(",");
+    if (cols[iStatus] !== "closed") continue;
+    const px_in = parseFloat(cols[iEntryPx]);
+    const px_out = parseFloat(cols[iExitPx]);
+    if (isNaN(px_in) || isNaN(px_out)) continue;
+    const side = cols[iSide];
+    const dir = side === "long" ? 1 : 2;
+    // Use realized_pnl directly if present (already in dollars net of commission);
+    // for the chart we need points -- approximate via abs(price diff) sign.
+    const points = (dir === 1 ? (px_out - px_in) : (px_in - px_out));
+    out.push({
+      dir, entry_px: px_in, exit_px: px_out,
+      profit_points: points,
+      entry_t: cols[iEntryT], exit_t: cols[iExitT],
+      realized_pnl: parseFloat(cols[iPnl] || 0),
+    });
+  }
+  // Sort by entry_time
+  out.sort((a, b) => (a.entry_t < b.entry_t ? -1 : 1));
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Buttons
+// ─────────────────────────────────────────────────────────────────────
+$("#reset").addEventListener("click", () => {
+  setSliders(DEFAULT_PARAMS);
+  sendRunRequest();
+});
+$("#run").addEventListener("click", () => sendRunRequest());
+
+// ─────────────────────────────────────────────────────────────────────
+// Boot
+// ─────────────────────────────────────────────────────────────────────
+buildSliders();
+connect();
+window.addEventListener("resize", () => {
+  if (window.lastTrades) drawEquityCurve(window.lastTrades);
+});
+</script>
+
+</body>
+</html>
