@@ -38,6 +38,18 @@
   .stat .value.neutral { color: #e0e6ed; }
   .stat .sub { font-size: 10px; color: #5b6478; margin-top: 2px; }
 
+  /* Win-rate bar: red <=30%, yellow ~50%, green >=70% (color set inline). */
+  .wr-stat .wr-bar { height: 6px; background: #2a3140; border-radius: 3px; margin-top: 4px; overflow: hidden; }
+  .wr-stat .wr-fill { height: 100%; width: 0%; background: #2a3140; transition: width 120ms ease, background 120ms ease; }
+
+  /* Saved-configs panel below the sliders. */
+  .save-panel { margin-top: 18px; }
+  .save-panel .row { display: flex; gap: 4px; margin-bottom: 6px; }
+  .save-panel input[type=text],
+  .save-panel select { flex: 1; padding: 4px 6px; background: #1b2230; color: #e0e6ed; border: 1px solid #2a3140; border-radius: 3px; font-family: inherit; font-size: 11px; }
+  .save-panel button { padding: 4px 10px; background: #2a3140; color: #e0e6ed; border: 1px solid #3d4658; border-radius: 3px; cursor: pointer; font-family: inherit; font-size: 11px; }
+  .save-panel button:hover { background: #353c4e; }
+
   .chart-wrap { background: #181c25; border: 1px solid #2a3140; border-radius: 4px; padding: 14px; flex: 1; min-height: 280px; display: flex; flex-direction: column; }
   .chart-wrap h3 { font-size: 11px; color: #8a99af; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
   canvas#equity { width: 100%; height: 100%; flex: 1; }
@@ -79,6 +91,17 @@
   <aside class="sliders">
     <h2>Parameters</h2>
     <div id="sliders"></div>
+    <div class="save-panel">
+      <h2 style="margin-top: 18px;">Saved configs</h2>
+      <div class="row">
+        <input type="text" id="save-name" placeholder="Name (e.g. 1yr_30k)" />
+        <button id="save-btn" title="Save current sliders under this name">Save</button>
+      </div>
+      <div class="row">
+        <select id="load-select"></select>
+        <button id="delete-btn" title="Delete selected saved config">×</button>
+      </div>
+    </div>
     <div class="controls">
       <button id="reset">Reset</button>
       <button id="run" class="primary">Run</button>
@@ -101,7 +124,11 @@
       <div class="stat"><span class="label">Trades</span><span class="value neutral" id="s-n">—</span></div>
       <div class="stat"><span class="label">Wins</span><span class="value pos" id="s-w">—</span></div>
       <div class="stat"><span class="label">Losses</span><span class="value neg" id="s-l">—</span></div>
-      <div class="stat"><span class="label">Win Rate</span><span class="value neutral" id="s-wr">—</span></div>
+      <div class="stat wr-stat">
+        <span class="label">Win Rate</span>
+        <span class="value neutral" id="s-wr">—</span>
+        <div class="wr-bar"><div class="wr-fill" id="wr-fill"></div></div>
+      </div>
       <div class="stat"><span class="label">Profit Factor</span><span class="value neutral" id="s-pf">—</span></div>
       <div class="stat"><span class="label">P&amp;L ($)</span><span class="value neutral" id="s-pnl">—</span><span class="sub" id="s-pnl-dollars">—</span></div>
       <div class="stat"><span class="label">Max DD ($)</span><span class="value neg" id="s-dd">—</span><span class="sub" id="s-dd-dollars">—</span></div>
@@ -144,7 +171,7 @@ const SLIDER_DEFS = [
   { name: "ts_trail_ticks",   label: "TS Trail (ticks)",  min: 1,    max: 12,   step: 1,    kind: "int" },
   { name: "min_sl_ticks",     label: "Min SL (ticks)",    min: 5,    max: 50,   step: 1,    kind: "int" },
   { name: "max_sl_ticks",     label: "Max SL (ticks)",    min: 15,   max: 100,  step: 1,    kind: "int" },
-  { name: "risk_dollars",     label: "Risk $ / trade",    min: 5,    max: 200,  step: 1,    kind: "float" },
+  { name: "risk_dollars",     label: "Risk $ / trade",    min: 1,    max: 100000, step: 1,  kind: "float", text: true },
   { name: "min_bars_above",   label: "Min Bars Above",    min: 0,    max: 6,    step: 1,    kind: "int" },
   { name: "min_bars_below",   label: "Min Bars Below",    min: 0,    max: 6,    step: 1,    kind: "int" },
   { name: "min_bars_after_l", label: "Min Bars After L",  min: 0,    max: 6,    step: 1,    kind: "int" },
@@ -183,23 +210,41 @@ function buildSliders() {
   SLIDER_DEFS.forEach((def, i) => {
     const row = document.createElement("div");
     row.className = "slider-row";
-    row.innerHTML = `
-      <label>
-        <span class="name">${def.label}</span>
-        <span class="val" id="val-${def.name}">${DEFAULT_PARAMS[i]}</span>
-      </label>
-      <input type="range" id="sl-${def.name}"
-             min="${def.min}" max="${def.max}" step="${def.step}"
-             value="${DEFAULT_PARAMS[i]}" />
-      <div class="range-meta"><span>${def.min}</span><span>${def.max}</span></div>
-    `;
+    if (def.text) {
+      // Text/number input — for params where dragging isn't meaningful
+      // (e.g. risk$ — typed once and left alone for a session).
+      row.innerHTML = `
+        <label>
+          <span class="name">${def.label}</span>
+        </label>
+        <input type="number" id="sl-${def.name}"
+               min="${def.min}" max="${def.max}" step="${def.step}"
+               value="${DEFAULT_PARAMS[i]}"
+               style="width: 100%; padding: 4px 6px; background: #1b2230; color: #ffd874; border: 1px solid #2a3140; border-radius: 3px; font-size: 13px; font-weight: 700;" />
+      `;
+    } else {
+      row.innerHTML = `
+        <label>
+          <span class="name">${def.label}</span>
+          <span class="val" id="val-${def.name}">${DEFAULT_PARAMS[i]}</span>
+        </label>
+        <input type="range" id="sl-${def.name}"
+               min="${def.min}" max="${def.max}" step="${def.step}"
+               value="${DEFAULT_PARAMS[i]}" />
+        <div class="range-meta"><span>${def.min}</span><span>${def.max}</span></div>
+      `;
+    }
     root.appendChild(row);
     const input = row.querySelector("input");
-    const valLabel = row.querySelector(".val");
+    const valLabel = row.querySelector(".val");  // null for text rows — guarded below
     let pendingTimer = null;
-    input.addEventListener("input", () => {
+    // Number inputs: fire on `change` (commit) so we don't request mid-typing.
+    // Range inputs: fire on `input` (live drag) with debounce.
+    const evt = def.text ? "change" : "input";
+    input.addEventListener(evt, () => {
       const v = def.kind === "int" ? parseInt(input.value, 10) : parseFloat(input.value);
-      valLabel.textContent = v;
+      if (valLabel) valLabel.textContent = v;
+      autosaveCurrent();
       if (pendingTimer) clearTimeout(pendingTimer);
       pendingTimer = setTimeout(() => sendRunRequest(), 120);
     });
@@ -218,9 +263,78 @@ function setSliders(values) {
     const input = $(`#sl-${def.name}`);
     if (input) {
       input.value = values[i];
-      $(`#val-${def.name}`).textContent = values[i];
+      const val = $(`#val-${def.name}`);
+      if (val) val.textContent = values[i];   // text rows have no .val label
     }
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Persistence — autosave-on-change + named slots in localStorage
+// ─────────────────────────────────────────────────────────────────────
+const LS_AUTOSAVE = "playground_autosave_v1";
+const LS_SAVED    = "playground_saved_v1";
+
+function autosaveCurrent() {
+  try {
+    localStorage.setItem(LS_AUTOSAVE,
+      JSON.stringify({ params: readSliders(), ts: Date.now() }));
+  } catch (e) { /* private mode / quota — silent */ }
+}
+
+function restoreAutosave() {
+  try {
+    const raw = localStorage.getItem(LS_AUTOSAVE);
+    if (!raw) return false;
+    const data = JSON.parse(raw);
+    if (!Array.isArray(data.params) || data.params.length !== SLIDER_DEFS.length) return false;
+    setSliders(data.params);
+    return true;
+  } catch (e) { return false; }
+}
+
+function listSaved() {
+  try { return JSON.parse(localStorage.getItem(LS_SAVED) || "{}"); }
+  catch (e) { return {}; }
+}
+
+function writeSaved(all) {
+  localStorage.setItem(LS_SAVED, JSON.stringify(all));
+  refreshLoadSelect();
+}
+
+function refreshLoadSelect() {
+  const sel = $("#load-select");
+  if (!sel) return;
+  const all = listSaved();
+  const names = Object.keys(all).sort();
+  sel.innerHTML = '<option value="">Load saved…</option>' +
+    names.map(n => `<option value="${n}">${n}</option>`).join("");
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Win-rate bar — gradient red(<=30%) → yellow(50%) → green(>=70%) via HSL
+// ─────────────────────────────────────────────────────────────────────
+function wrColor(pct) {
+  // Clamp into [30, 70] for hue interpolation; hue 0=red, 60=yellow, 120=green.
+  const t = Math.max(0, Math.min(1, (pct - 30) / 40));
+  const hue = 120 * t;       // 0 (red) at pct<=30, 120 (green) at pct>=70
+  return `hsl(${hue.toFixed(0)}, 70%, 48%)`;
+}
+
+function setWrBar(pct) {
+  const bar  = $("#wr-fill");
+  const txt  = $("#s-wr");
+  if (!bar || !txt) return;
+  if (pct === null || pct === undefined || isNaN(pct)) {
+    bar.style.width = "0%";
+    bar.style.background = "#2a3140";
+    txt.textContent = "—";
+    return;
+  }
+  bar.style.width      = `${Math.max(0, Math.min(100, pct))}%`;
+  bar.style.background = wrColor(pct);
+  txt.textContent      = `${pct.toFixed(1)}%`;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -244,7 +358,9 @@ function handleMessage(msg) {
   if (msg.type === "hello") {
     if (msg.default_params && msg.default_params.length === 12) {
       DEFAULT_PARAMS = msg.default_params;
-      setSliders(DEFAULT_PARAMS);
+      // Only adopt server defaults if we didn't restore the user's last
+      // session — otherwise we'd clobber a "$30K config" mid-reconnect.
+      if (!window.autosaveRestored) setSliders(DEFAULT_PARAMS);
     }
     if (msg.dataset_info) $("#dataset-info").textContent = msg.dataset_info;
     sendRunRequest();
@@ -297,7 +413,7 @@ function renderResult(msg) {
   $("#s-n").textContent   = n;
   $("#s-w").textContent   = w;
   $("#s-l").textContent   = l;
-  $("#s-wr").textContent  = `${wr.toFixed(1)}%`;
+  setWrBar(n > 0 ? wr : null);
   $("#s-pf").textContent  = isFinite(pf) ? pf.toFixed(2) : "∞";
   $("#s-pf").className    = "value " + (pf >= 1.5 ? "pos" : pf >= 1.0 ? "neutral" : "neg");
   $("#s-pnl").textContent = `$${(pnl * TICK_VALUE * 4).toFixed(0)}`;
@@ -561,14 +677,47 @@ $("#lock-y").addEventListener("click", () => {
 
 $("#reset").addEventListener("click", () => {
   setSliders(DEFAULT_PARAMS);
+  autosaveCurrent();
   sendRunRequest();
 });
 $("#run").addEventListener("click", () => sendRunRequest());
+
+$("#save-btn").addEventListener("click", () => {
+  const name = ($("#save-name").value || "").trim();
+  if (!name) { $("#save-name").focus(); return; }
+  const all = listSaved();
+  if (all[name] && !confirm(`Overwrite "${name}"?`)) return;
+  all[name] = readSliders();
+  writeSaved(all);
+  $("#save-name").value = "";
+  $("#load-select").value = name;   // surface what was just saved
+});
+
+$("#load-select").addEventListener("change", (e) => {
+  const name = e.target.value;
+  if (!name) return;
+  const all = listSaved();
+  if (!all[name]) return;
+  setSliders(all[name]);
+  autosaveCurrent();
+  sendRunRequest();
+});
+
+$("#delete-btn").addEventListener("click", () => {
+  const name = $("#load-select").value;
+  if (!name) return;
+  if (!confirm(`Delete saved config "${name}"?`)) return;
+  const all = listSaved();
+  delete all[name];
+  writeSaved(all);
+});
 
 // ─────────────────────────────────────────────────────────────────────
 // Boot
 // ─────────────────────────────────────────────────────────────────────
 buildSliders();
+window.autosaveRestored = restoreAutosave();   // re-apply last session's sliders if present
+refreshLoadSelect();                            // populate the named-saves dropdown
 connect();
 window.addEventListener("resize", () => {
   if (window.lastTrades) drawEquityCurve(window.lastTrades);
