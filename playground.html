@@ -29,7 +29,7 @@
   .controls button.primary:hover { background: #2563a6; }
 
   .results { display: flex; flex-direction: column; padding: 14px; gap: 14px; overflow: hidden; }
-  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; padding: 14px; background: #181c25; border: 1px solid #2a3140; border-radius: 4px; }
+  .stats { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; padding: 14px; background: #181c25; border: 1px solid #2a3140; border-radius: 4px; }
   .stat { display: flex; flex-direction: column; }
   .stat .label { font-size: 10px; color: #8a99af; text-transform: uppercase; letter-spacing: 0.5px; }
   .stat .value { font-size: 18px; font-weight: 700; margin-top: 2px; }
@@ -98,15 +98,20 @@
 
   <main class="results">
     <div class="stats" id="stats">
-      <div class="stat"><span class="label">Trades</span><span class="value neutral" id="s-n">—</span><span class="sub" id="s-wr">—</span></div>
+      <div class="stat"><span class="label">Trades</span><span class="value neutral" id="s-n">—</span></div>
       <div class="stat"><span class="label">Wins</span><span class="value pos" id="s-w">—</span></div>
       <div class="stat"><span class="label">Losses</span><span class="value neg" id="s-l">—</span></div>
-      <div class="stat"><span class="label">P&amp;L (pts)</span><span class="value neutral" id="s-pnl">—</span><span class="sub" id="s-pnl-dollars">—</span></div>
-      <div class="stat"><span class="label">Max DD (pts)</span><span class="value neg" id="s-dd">—</span><span class="sub" id="s-dd-dollars">—</span></div>
+      <div class="stat"><span class="label">Win Rate</span><span class="value neutral" id="s-wr">—</span></div>
+      <div class="stat"><span class="label">Profit Factor</span><span class="value neutral" id="s-pf">—</span></div>
+      <div class="stat"><span class="label">P&amp;L ($)</span><span class="value neutral" id="s-pnl">—</span><span class="sub" id="s-pnl-dollars">—</span></div>
+      <div class="stat"><span class="label">Max DD ($)</span><span class="value neg" id="s-dd">—</span><span class="sub" id="s-dd-dollars">—</span></div>
     </div>
 
     <div class="chart-wrap">
-      <h3>Equity curve (cumulative points)</h3>
+      <h3 style="display: flex; justify-content: space-between; align-items: center;">
+        <span>Equity curve (cumulative points)</span>
+        <button id="lock-y" style="font-size: 10px; padding: 2px 8px; background: #2a3140; color: #b0bccd; border: 1px solid #3a4255; border-radius: 3px; cursor: pointer;">Lock Y</button>
+      </h3>
       <canvas id="equity"></canvas>
     </div>
 
@@ -195,10 +200,8 @@ function buildSliders() {
     input.addEventListener("input", () => {
       const v = def.kind === "int" ? parseInt(input.value, 10) : parseFloat(input.value);
       valLabel.textContent = v;
-    });
-    input.addEventListener("change", () => {
       if (pendingTimer) clearTimeout(pendingTimer);
-      pendingTimer = setTimeout(() => sendRunRequest(), 50);
+      pendingTimer = setTimeout(() => sendRunRequest(), 120);
     });
   });
 }
@@ -280,15 +283,28 @@ function renderResult(msg) {
   const pnl = stats.total_pnl_points || 0;
   const dd  = stats.max_dd_points || 0;
   const wr  = n > 0 ? (w / n * 100) : 0;
+
+  // Profit factor: gross winning $ / gross losing $ (uses qty so the
+  // ratio reflects sized contribution, matching how PnL is summed).
+  let grossWin = 0, grossLoss = 0;
+  for (const t of trades) {
+    const dollars = t.profit_points * (t.qty || 1);
+    if (dollars > 0) grossWin  += dollars;
+    else             grossLoss += -dollars;
+  }
+  const pf = grossLoss > 0 ? (grossWin / grossLoss) : (grossWin > 0 ? Infinity : 0);
+
   $("#s-n").textContent   = n;
-  $("#s-wr").textContent  = `WR ${wr.toFixed(1)}%`;
   $("#s-w").textContent   = w;
   $("#s-l").textContent   = l;
-  $("#s-pnl").textContent = pnl.toFixed(2);
-  $("#s-pnl-dollars").textContent = `$${(pnl * TICK_VALUE * 4).toFixed(0)}`;
+  $("#s-wr").textContent  = `${wr.toFixed(1)}%`;
+  $("#s-pf").textContent  = isFinite(pf) ? pf.toFixed(2) : "∞";
+  $("#s-pf").className    = "value " + (pf >= 1.5 ? "pos" : pf >= 1.0 ? "neutral" : "neg");
+  $("#s-pnl").textContent = `$${(pnl * TICK_VALUE * 4).toFixed(0)}`;
+  $("#s-pnl-dollars").textContent = `${pnl.toFixed(2)} pts`;
   $("#s-pnl").className   = "value " + (pnl > 0 ? "pos" : pnl < 0 ? "neg" : "neutral");
-  $("#s-dd").textContent  = dd.toFixed(2);
-  $("#s-dd-dollars").textContent  = `$${(dd * TICK_VALUE * 4).toFixed(0)}`;
+  $("#s-dd").textContent  = `$${(dd * TICK_VALUE * 4).toFixed(0)}`;
+  $("#s-dd-dollars").textContent  = `${dd.toFixed(2)} pts`;
 
   $("#t-count").textContent = `(${trades.length})`;
 
@@ -374,8 +390,31 @@ function drawEquityCurve(trades) {
   // Build equity series
   let cum = 0;
   const points = trades.map(t => { cum += t.profit_points; return cum; });
-  const minY = Math.min(0, ...points);
-  const maxY = Math.max(0, ...points);
+
+  // Two Y-axis modes:
+  //   "auto" (default): autoscale every render to fit current data + overlay.
+  //   "locked": use the range captured when user clicked "Lock Y".
+  // Toggle via the Lock Y / Unlock button next to the chart title.
+  let minY, maxY;
+  if (window.yMode === "locked" && window.lockedY) {
+    minY = window.lockedY.min;
+    maxY = window.lockedY.max;
+  } else {
+    let dataMin = Math.min(0, ...points);
+    let dataMax = Math.max(0, ...points);
+    if ($("#overlay-live").checked && liveOverlayTrades && liveOverlayTrades.length > 0) {
+      let cumLive = 0;
+      liveOverlayTrades.forEach(t => {
+        cumLive += t.profit_points;
+        if (cumLive < dataMin) dataMin = cumLive;
+        if (cumLive > dataMax) dataMax = cumLive;
+      });
+    }
+    minY = dataMin;
+    maxY = dataMax;
+    // Cache for the Lock button.
+    window.currentY = { min: minY, max: maxY };
+  }
   const padX = 40, padTop = 12, padBot = 24;
   const xScale = (W - padX - 12) / Math.max(1, points.length - 1);
   const yScale = (H - padTop - padBot) / (maxY - minY || 1);
@@ -491,6 +530,21 @@ function parseLiveCsv(text) {
 // ─────────────────────────────────────────────────────────────────────
 // Buttons
 // ─────────────────────────────────────────────────────────────────────
+$("#lock-y").addEventListener("click", () => {
+  const btn = $("#lock-y");
+  if (window.yMode === "locked") {
+    window.yMode = "auto";
+    btn.textContent = "Lock Y";
+  } else if (window.currentY) {
+    window.lockedY = { ...window.currentY };
+    window.yMode = "locked";
+    const lo = window.lockedY.min.toFixed(0);
+    const hi = window.lockedY.max.toFixed(0);
+    btn.textContent = `Unlock (${lo}…${hi} pts)`;
+  }
+  if (window.lastTrades) drawEquityCurve(window.lastTrades);
+});
+
 $("#reset").addEventListener("click", () => {
   setSliders(DEFAULT_PARAMS);
   sendRunRequest();
