@@ -109,7 +109,7 @@
 
     <div class="chart-wrap">
       <h3 style="display: flex; justify-content: space-between; align-items: center;">
-        <span>Equity curve (cumulative points)</span>
+        <span>Equity curve (cumulative $)</span>
         <button id="lock-y" style="font-size: 10px; padding: 2px 8px; background: #2a3140; color: #b0bccd; border: 1px solid #3a4255; border-radius: 3px; cursor: pointer;">Lock Y</button>
       </h3>
       <canvas id="equity"></canvas>
@@ -387,9 +387,20 @@ function drawEquityCurve(trades) {
     return;
   }
 
-  // Build equity series
+  // Build equity series in DOLLARS so the chart matches the stats panel
+  // and the user's mental model. Cumulating raw profit_points alone is
+  // qty-blind: smaller minSL -> larger qty -> trades worth more dollars
+  // per raw point, so a config with smaller dollar-PnL can still produce
+  // a higher raw-points cumulative than a higher-dollar config and spill
+  // past a Y-axis lock. Multiplying by qty * (TICK_VALUE / TICK_SIZE)
+  // (= "$2/pt for MNQ"; same factor as the stats panel) keeps the chart
+  // and the lock button in real dollars.
+  const dollarFactor = TICK_VALUE * 4;  // 0.50 / 0.25 * tick_value = $/pt
   let cum = 0;
-  const points = trades.map(t => { cum += t.profit_points; return cum; });
+  const points = trades.map(t => {
+    cum += t.profit_points * (t.qty || 1) * dollarFactor;
+    return cum;
+  });
 
   // Two Y-axis modes:
   //   "auto" (default): autoscale every render to fit current data + overlay.
@@ -405,7 +416,7 @@ function drawEquityCurve(trades) {
     if ($("#overlay-live").checked && liveOverlayTrades && liveOverlayTrades.length > 0) {
       let cumLive = 0;
       liveOverlayTrades.forEach(t => {
-        cumLive += t.profit_points;
+        cumLive += t.profit_points * (t.qty || 1) * dollarFactor;
         if (cumLive < dataMin) dataMin = cumLive;
         if (cumLive > dataMax) dataMax = cumLive;
       });
@@ -443,16 +454,19 @@ function drawEquityCurve(trades) {
   ctx.fillStyle = "#5b6478";
   ctx.font = "10px ui-monospace, Menlo, Consolas, monospace";
   ctx.textAlign = "right";
-  ctx.fillText(`+${maxY.toFixed(0)} pts`, padX - 4, padTop + 8);
-  ctx.fillText(`${minY.toFixed(0)} pts`, padX - 4, H - padBot);
-  ctx.fillText(`0`, padX - 4, yOf(0) + 4);
+  ctx.fillText(`+$${maxY.toFixed(0)}`, padX - 4, padTop + 8);
+  ctx.fillText(`$${minY.toFixed(0)}`, padX - 4, H - padBot);
+  ctx.fillText(`$0`, padX - 4, yOf(0) + 4);
   ctx.textAlign = "left";
   ctx.fillText(`${trades.length} trades`, padX, H - 4);
 
   // ── Phase 4: live overlay ──
   if ($("#overlay-live").checked && liveOverlayTrades && liveOverlayTrades.length > 0) {
     let cumLive = 0;
-    const livePoints = liveOverlayTrades.map(t => { cumLive += t.profit_points; return cumLive; });
+    const livePoints = liveOverlayTrades.map(t => {
+      cumLive += t.profit_points * (t.qty || 1) * dollarFactor;
+      return cumLive;
+    });
     const liveScale = (W - padX - 12) / Math.max(1, livePoints.length - 1);
     ctx.strokeStyle = "#ffd874";  // amber for live
     ctx.lineWidth = 1.4;
@@ -466,7 +480,7 @@ function drawEquityCurve(trades) {
     ctx.stroke();
     ctx.setLineDash([]);
     ctx.fillStyle = "#ffd874";
-    ctx.fillText(`live: ${livePoints.length} trades, ${(cumLive).toFixed(0)} pts`, padX + 100, H - 4);
+    ctx.fillText(`live: ${livePoints.length} trades, $${(cumLive).toFixed(0)}`, padX + 100, H - 4);
   }
 }
 
@@ -540,7 +554,7 @@ $("#lock-y").addEventListener("click", () => {
     window.yMode = "locked";
     const lo = window.lockedY.min.toFixed(0);
     const hi = window.lockedY.max.toFixed(0);
-    btn.textContent = `Unlock (${lo}…${hi} pts)`;
+    btn.textContent = `Unlock ($${lo}…$${hi})`;
   }
   if (window.lastTrades) drawEquityCurve(window.lastTrades);
 });
